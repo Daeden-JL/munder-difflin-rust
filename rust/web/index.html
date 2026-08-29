@@ -73,7 +73,7 @@
     <p class="note">
       <span id="portedCount">12</span> of 161 channels are ported. Anything else
       answers <code>not_implemented</code> — that is the port working, not a bug
-      (<code>hive:hookEvent</code> is in the list to show one).
+      (<code>hive:textSearch</code> is in the list to show one).
     </p>
     <fieldset id="rpcFields" disabled>
       <label for="channel">channel</label>
@@ -102,7 +102,10 @@
         <option>hive:inbox</option>
         <option>hive:memory</option>
         <option>hive:send</option>
-        <option>hive:hookEvent</option>
+        <option>control:snapshot</option>
+        <option>control:pause</option>
+        <option>control:steer</option>
+        <option>hive:textSearch</option>
       </select>
       <label for="args">args (JSON array)</label>
       <textarea id="args" rows="3">[]</textarea>

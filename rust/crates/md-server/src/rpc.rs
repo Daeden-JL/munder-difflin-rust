@@ -57,6 +57,13 @@ pub enum Op {
     HiveSetArchived,
     HiveSetAgentHold,
     HiveSend,
+    ControlPause,
+    ControlResume,
+    ControlHalt,
+    ControlSteer,
+    ControlSnapshot,
+    ControlAutoDelivery,
+    ControlGateTool,
 }
 
 /// The single channel-to-implementation mapping. `None` means "not ported yet",
@@ -104,6 +111,13 @@ pub const fn handler_for(rpc: Rpc) -> Option<Op> {
         Rpc::HiveSetArchived => Op::HiveSetArchived,
         Rpc::HiveSetAgentHold => Op::HiveSetAgentHold,
         Rpc::HiveSend => Op::HiveSend,
+        Rpc::ControlPause => Op::ControlPause,
+        Rpc::ControlResume => Op::ControlResume,
+        Rpc::ControlHalt => Op::ControlHalt,
+        Rpc::ControlSteer => Op::ControlSteer,
+        Rpc::ControlSnapshot => Op::ControlSnapshot,
+        Rpc::ControlAutoDelivery => Op::ControlAutoDelivery,
+        Rpc::ControlGateTool => Op::ControlGateTool,
         _ => return None,
     })
 }
@@ -161,7 +175,7 @@ mod tests {
         for r in unported() {
             println!("  todo {} ({})", r.as_str(), r.bridge_method());
         }
-        assert_eq!(done, 40, "handler count changed; update this number intentionally");
+        assert_eq!(done, 47, "handler count changed; update this number intentionally");
     }
 
     /// A channel must never map to two operations, and every op must be
@@ -181,6 +195,8 @@ mod tests {
             Op::HivePatchTask, Op::HiveDeleteTask, Op::HiveLog, Op::HiveMemory,
             Op::HiveInbox, Op::HiveRenameAgent, Op::HivePatchAgentRole,
             Op::HiveSetArchived, Op::HiveSetAgentHold, Op::HiveSend,
+            Op::ControlPause, Op::ControlResume, Op::ControlHalt, Op::ControlSteer,
+            Op::ControlSnapshot, Op::ControlAutoDelivery, Op::ControlGateTool,
         ];
         for op in all {
             assert!(ops.contains(&op), "{op:?} is not reachable from any channel");

@@ -22,14 +22,14 @@ RUN mkdir -p rust/crates/md-contract/src rust/crates/md-tenant/src \
           rust/crates/md-pty/src/lib.rs rust/crates/md-server/src/lib.rs \
  # build.rs is required for md-contract to resolve at all.
  && printf 'fn main(){}' > rust/crates/md-contract/build.rs
-RUN cd rust && cargo build --release --locked -p md-server 2>/dev/null || true
+RUN cd rust && cargo build --release --locked -p md-server -p md-hook 2>/dev/null || true
 
 # Real sources.
 COPY contract/ ./contract/
 COPY rust/ ./rust/
 # Cargo skips a rebuild when mtimes look unchanged; touching forces it.
 RUN find rust/crates -name '*.rs' -exec touch {} + \
- && cd rust && cargo build --release --locked -p md-server
+ && cd rust && cargo build --release --locked -p md-server -p md-hook
 
 FROM debian:bookworm-slim AS runtime
 # ca-certificates for outbound HTTPS; procps so process inspection works when
@@ -42,6 +42,10 @@ RUN apt-get update \
 # The server spawns agent processes, so it does not run as root.
 RUN useradd --create-home --uid 10001 --shell /bin/bash md
 COPY --from=builder /build/rust/target/release/md-server /usr/local/bin/md-server
+# The hook shim runs inside the agent's own environment on every lifecycle hook.
+# It ships as a static binary so an agent container needs no language runtime
+# just to report that a tool ran.
+COPY --from=builder /build/rust/target/release/md-hook /usr/local/bin/md-hook
 
 USER md
 WORKDIR /home/md

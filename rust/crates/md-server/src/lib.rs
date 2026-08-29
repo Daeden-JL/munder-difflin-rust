@@ -1,7 +1,9 @@
 //! Munder Difflin server: the Rust replacement for the Electron main process.
 
 pub mod auth;
+pub mod control;
 pub mod git;
+pub mod hooks;
 pub mod hive;
 pub mod handlers;
 pub mod rpc;
@@ -22,7 +24,11 @@ use ws::Hub;
 
 /// Build the app. Kept separate from `main` so tests can drive the real router
 /// rather than a stand-in that drifts from it.
-pub fn build(cfg: &ServerConfig, accounts: Vec<Account>, sandbox: Arc<dyn Sandbox>)
+///
+/// `async` because it spawns one hook listener per tenant and so needs a
+/// runtime. That is worth stating in the signature: a sync version would compile
+/// everywhere and then panic at startup when called from the wrong place.
+pub async fn build(cfg: &ServerConfig, accounts: Vec<Account>, sandbox: Arc<dyn Sandbox>)
     -> anyhow::Result<Router>
 {
     let tenants: HashMap<TenantId, TenantPaths> = accounts
@@ -39,6 +45,11 @@ pub fn build(cfg: &ServerConfig, accounts: Vec<Account>, sandbox: Arc<dyn Sandbo
         std::fs::create_dir_all(paths.workspaces())?;
     }
 
+    let control: HashMap<TenantId, Arc<control::Control>> = tenants
+        .keys()
+        .map(|t| (t.clone(), Arc::new(control::Control::new())))
+        .collect();
+
     let state = AppState {
         sessions: SessionStore::new(),
         accounts: Arc::new(accounts.into_iter().map(|a| (a.user.clone(), a)).collect()),
@@ -46,7 +57,28 @@ pub fn build(cfg: &ServerConfig, accounts: Vec<Account>, sandbox: Arc<dyn Sandbo
         pty: Arc::new(PtyManager::new(Arc::clone(&sandbox))),
         hub: Hub::new(),
         sandbox,
+        control: Arc::new(control),
     };
+
+    // One hook listener per tenant, inside that tenant's own hive directory.
+    // The socket path is the authorization, so there is nothing further to check
+    // on the connection itself.
+    for (tenant, paths) in state.tenants.iter() {
+        let ctx = hooks::HookCtx {
+            tenant: tenant.clone(),
+            hive_root: paths.hive_root(),
+            hub: state.hub.clone(),
+            control: state.control(tenant),
+        };
+        tokio::spawn(async move {
+            // A tenant whose socket cannot bind loses hook-driven UI updates, but
+            // the rest of its server keeps working — so this logs rather than
+            // aborting startup for everyone.
+            if let Err(e) = hooks::serve(ctx.clone()).await {
+                tracing::error!(tenant = %ctx.tenant, error = %e, "hook socket unavailable");
+            }
+        });
+    }
 
     let mut app = Router::new()
         .route("/api/login", post(login))

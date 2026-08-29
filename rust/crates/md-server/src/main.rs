@@ -96,7 +96,7 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
         &std::env::var("MD_PASSWORD").unwrap_or_else(|_| "dev".into()),
     )?];
 
-    let app = md_server::build(&cfg, accounts, sandbox)?;
+    let app = md_server::build(&cfg, accounts, sandbox).await?;
 
     let tls = match (std::env::var("MD_TLS_CERT").ok(), std::env::var("MD_TLS_KEY").ok()) {
         (Some(cert), Some(key)) => Some((cert, key)),

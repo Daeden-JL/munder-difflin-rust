@@ -27,41 +27,41 @@ fn tmp(name: &str) -> std::path::PathBuf {
 /// The single most important startup check: passthrough gives no isolation, so
 /// booting it with more than one tenant would silently expose every tenant to
 /// every other. It must be a hard startup failure, not a warning.
-#[test]
-fn passthrough_refuses_to_serve_two_tenants() {
+#[tokio::test]
+async fn passthrough_refuses_to_serve_two_tenants() {
     let dir = tmp("passthrough-multi");
     let accounts = vec![
         Account::new("a", TenantId::parse("alpha").unwrap(), "pw").unwrap(),
         Account::new("b", TenantId::parse("beta").unwrap(), "pw").unwrap(),
     ];
-    let err = md_server::build(&cfg(&dir), accounts, Arc::new(PassthroughSandbox))
+    let err = md_server::build(&cfg(&dir), accounts, Arc::new(PassthroughSandbox)).await
         .expect_err("must refuse to start");
     assert!(err.to_string().contains("no isolation"), "unexpected error: {err}");
 }
 
-#[test]
-fn passthrough_serves_a_single_tenant() {
+#[tokio::test]
+async fn passthrough_serves_a_single_tenant() {
     let dir = tmp("passthrough-single");
     let accounts = vec![Account::new("a", TenantId::parse("alpha").unwrap(), "pw").unwrap()];
-    assert!(md_server::build(&cfg(&dir), accounts, Arc::new(PassthroughSandbox)).is_ok());
+    assert!(md_server::build(&cfg(&dir), accounts, Arc::new(PassthroughSandbox)).await.is_ok());
 }
 
 /// Provisioning must create each tenant's home eagerly. A tenant whose directory
 /// appears lazily on first write is a tenant whose first read silently falls
 /// through to whatever the parent directory happens to contain.
-#[test]
-fn building_provisions_each_tenant_home() {
+#[tokio::test]
+async fn building_provisions_each_tenant_home() {
     let dir = tmp("provision");
     let accounts = vec![Account::new("a", TenantId::parse("gamma").unwrap(), "pw").unwrap()];
-    let _app = md_server::build(&cfg(&dir), accounts, Arc::new(PassthroughSandbox)).unwrap();
+    let _app = md_server::build(&cfg(&dir), accounts, Arc::new(PassthroughSandbox)).await.unwrap();
     assert!(dir.join("gamma/.munder-difflin").is_dir());
     assert!(dir.join("gamma/workspaces").is_dir());
 }
 
 /// A sandbox must never resolve one tenant's spawn against another's paths, even
 /// when both are legitimate tenants on the same server.
-#[test]
-fn sandbox_refuses_cross_tenant_spawn() {
+#[tokio::test]
+async fn sandbox_refuses_cross_tenant_spawn() {
     use md_tenant::{SpawnRequest, TenantPaths};
     let alpha = TenantId::parse("alpha").unwrap();
     let beta = TenantId::parse("beta").unwrap();

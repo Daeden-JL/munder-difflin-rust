@@ -123,7 +123,33 @@ pub async fn run(op: Op, ctx: Ctx) -> RpcResponse {
         | Op::HiveSetArchived
         | Op::HiveSetAgentHold
         | Op::HiveSend => hive_op(op, &ctx),
+
+        Op::ControlPause
+        | Op::ControlResume
+        | Op::ControlHalt
+        | Op::ControlSteer
+        | Op::ControlSnapshot
+        | Op::ControlAutoDelivery
+        | Op::ControlGateTool => control_op(op, &ctx),
     }
+}
+
+/// Each control channel answers with the agent's FULL snapshot rather than an
+/// ack, so one round trip leaves the caller with the complete state — the
+/// bridge promised `AgentControlSnapshot | null` and the UI renders from it.
+fn control_op(op: Op, ctx: &Ctx) -> RpcResponse {
+    let c = ctx.state.control(&ctx.tenant);
+    let id: String = tri!(ctx.arg(0));
+    RpcResponse::ok(match op {
+        Op::ControlPause => c.pause(&id, tri!(ctx.arg::<bool>(1))),
+        Op::ControlResume => c.resume(&id),
+        Op::ControlHalt => c.halt(&id),
+        Op::ControlSteer => c.steer(&id, &tri!(ctx.arg::<String>(1))),
+        Op::ControlSnapshot => c.snapshot(&id),
+        Op::ControlAutoDelivery => c.set_auto_delivery_paused(&id, tri!(ctx.arg::<bool>(1))),
+        Op::ControlGateTool => c.gate_tool(&id, &tri!(ctx.arg::<String>(1)), tri!(ctx.arg::<bool>(2))),
+        _ => unreachable!("control_op called with a non-control op"),
+    })
 }
 
 /// The hive lives entirely inside the tenant's own harness home, so these need

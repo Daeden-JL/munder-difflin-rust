@@ -38,22 +38,29 @@ MAIN_SCREEN = [
     "scene/office/Character.ts",
 ]
 
-# Channels with a handler in rust/crates/md-server/src/rpc.rs. Parsed from the
-# source so this cannot drift from what the server actually serves.
+# Channels the server actually serves. Parsed from the source so this cannot
+# drift: RPC channels from the dispatch table, push channels from the `Push::`
+# variants the server constructs. Counting only RPC would understate progress
+# the moment the first subscription starts being emitted.
 RPC_RS = ROOT / "rust/crates/md-server/src/rpc.rs"
+SERVER_SRC = ROOT / "rust/crates/md-server/src"
 MANIFEST = ROOT / "contract/manifest.json"
 SRC = ROOT / "src/renderer/src"
 
 CALL_RE = re.compile(r"\bcth\.([A-Za-z_][A-Za-z0-9_]*)")
 VARIANT_RE = re.compile(r"Rpc::(\w+) => Op::")
+PUSH_RE = re.compile(r"Push::(\w+)")
 
 
 def ported_channels(by_variant):
     if not RPC_RS.exists():
         sys.exit(f"missing {RPC_RS}")
-    return {
-        by_variant[v] for v in VARIANT_RE.findall(RPC_RS.read_text()) if v in by_variant
-    }
+    served = {v for v in VARIANT_RE.findall(RPC_RS.read_text())}
+    # A push channel counts as served where the server emits it. `.as_str()` and
+    # the enum definition itself are not emissions, so skip the contract crate.
+    for f in SERVER_SRC.rglob("*.rs"):
+        served |= set(PUSH_RE.findall(f.read_text()))
+    return {by_variant[v] for v in served if v in by_variant}
 
 
 def methods_in(paths):

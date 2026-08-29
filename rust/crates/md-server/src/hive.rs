@@ -352,6 +352,24 @@ impl Hive {
         }
     }
 
+    /// Remember the CLI session id a hook reported, for an idempotent
+    /// `--resume` and for cost dedup. Writes only when it changes: a hook fires
+    /// on every tool call, and rewriting the registry each time would churn the
+    /// file agents poll.
+    pub fn record_session(&self, id: &str, session_id: &str) {
+        if session_id.is_empty() {
+            return;
+        }
+        self.patch_agent(id, json!({ "kind": "session", "agentId": id }), |a| {
+            if a.get("sessionId").and_then(|v| v.as_str()) == Some(session_id) {
+                return Ok(false);
+            }
+            a.insert("sessionId".into(), json!(session_id));
+            a.insert("lastSeen".into(), json!(now_ms()));
+            Ok(true)
+        });
+    }
+
     // ── Messaging ───────────────────────────────────────────────────────────
 
     /// Inject a message and route it. Returns the normalized message so the
@@ -702,6 +720,29 @@ mod tests {
 
         assert_eq!(h.delete_task("t1")["ok"], true);
         assert_eq!(h.delete_task("t1")["ok"], false);
+    }
+
+    /// A hook fires on every tool call, so an unchanged session id must not
+    /// rewrite the registry — agents poll that file.
+    #[test]
+    fn recording_a_session_id_is_idempotent() {
+        let h = Hive::new(tmp());
+        h.write_json(
+            &h.root.join("registry.json"),
+            &json!({ "godId": "michael", "agents": { "jim": { "name": "Jim" } } }),
+        )
+        .unwrap();
+
+        h.record_session("jim", "sess-1");
+        assert_eq!(h.registry()["agents"]["jim"]["sessionId"], "sess-1");
+
+        let before = std::fs::metadata(h.root.join("registry.json")).unwrap().modified().unwrap();
+        h.record_session("jim", "sess-1");
+        let after = std::fs::metadata(h.root.join("registry.json")).unwrap().modified().unwrap();
+        assert_eq!(before, after, "an unchanged id must not rewrite the file");
+
+        h.record_session("jim", "sess-2");
+        assert_eq!(h.registry()["agents"]["jim"]["sessionId"], "sess-2");
     }
 
     #[test]

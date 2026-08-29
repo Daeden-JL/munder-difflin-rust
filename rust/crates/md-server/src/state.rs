@@ -9,6 +9,7 @@ use md_pty::PtyManager;
 use md_tenant::{Sandbox, TenantId, TenantPaths};
 
 use crate::auth::{Account, SessionStore};
+use crate::control::Control;
 use crate::ws::Hub;
 
 #[derive(Clone)]
@@ -19,11 +20,19 @@ pub struct AppState {
     pub pty: Arc<PtyManager>,
     pub hub: Hub,
     pub sandbox: Arc<dyn Sandbox>,
+    /// Operator control state, per tenant. In memory because it describes agents
+    /// that are running now — it is meaningless across a restart that took them.
+    pub control: Arc<HashMap<TenantId, Arc<Control>>>,
 }
 
 impl AppState {
     pub fn paths(&self, tenant: &TenantId) -> Option<&TenantPaths> {
         self.tenants.get(tenant)
+    }
+
+    /// Every provisioned tenant has a registry, so this cannot legitimately miss.
+    pub fn control(&self, tenant: &TenantId) -> Arc<Control> {
+        self.control.get(tenant).cloned().unwrap_or_default()
     }
 }
 

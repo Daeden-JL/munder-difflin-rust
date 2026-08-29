@@ -1,6 +1,6 @@
 # Port checklist
 
-**Status: 40 of 161 RPC channels ported.** Regenerate this count any time:
+**Status: 47 of 161 RPC channels + 6 of 28 push channels served.** Regenerate this count any time:
 
 ```sh
 cd rust && cargo test -p md-server port_coverage -- --nocapture
@@ -9,16 +9,17 @@ cd rust && cargo test -p md-server port_coverage -- --nocapture
 Done so far: the contract extractor, the Cargo workspace, the axum core
 (auth + tenancy + RPC + WebSocket), the sandbox trait with two backends, the PTY
 core, a LAN-reachable test container, the git plane (14 channels), the hive
-STATE layer (14 channels), and a dev console at `/`. Everything below is what remains.
+state layer (14), the hook server + operator control (7 RPC + 3 push), the
+`md-hook` shim, and a dev console at `/`. Everything below is what remains.
 
 ---
 
 ## How much until it looks like the desktop app?
 
-Not 161 channels — **50**. That is the unported set reachable from the main
+Not 161 channels — **39**. That is the unported set reachable from the main
 screen's own call sites (`App`, the store, `useHive`, `AgentStrip`, `AgentCard`,
 `CommandCenterPanel`, `OfficeFloor`, the composer, the pty views), as opposed to
-110 unported across the whole renderer including every modal and settings tab.
+99 unported across the whole renderer including every modal and settings tab.
 
 Measured, not estimated:
 
@@ -31,16 +32,14 @@ The gap is dominated by one namespace:
 | namespace | unported | what it blocks |
 |---|---|---|
 | `app:` | 10 | mostly Electron-native; see `contract/PORTING-NOTES.md` |
-| `hive:` | 10 | **7 are subscriptions** — they need the hook server, not more state |
-| `control:` | 7 | pause/resume/halt/steer |
-| `pty:` | 4 | the three push streams + `redraw` |
+| `hive:` | 8 | 4 spawn-lifecycle pushes, 3 search, 1 terminal handoff |
 | `hire:` | 3 | agent creation |
-| everything else | 16 | ten namespaces, 1–2 channels each |
+| everything else | 18 | thirteen namespaces, 1–2 channels each |
 
-The floor can now be *drawn* — registry, tasks, board, memory and inboxes all
-read. What it cannot yet do is *update itself*: every remaining hive channel bar
-three is a push subscription fed by the hook server. So the next unit of work is
-the event source, not more state.
+The floor can be drawn *and* it updates itself: tool calls, denials and context
+occupancy now arrive live. What is left in `hive:` is mostly the **spawn**
+lifecycle (`agentSpawned`, `agentArchived`, `enqueueToAgent`, `message`) — those
+fire from agent provisioning, which is the next unit, not from more hook work.
 
 ---
 
@@ -111,18 +110,45 @@ the god with an `[undeliverable …]` subject. That is the Electron *fallback*
 path, taken because the terminal work-order channel is not ported — loud rather
 than silent, and it becomes the primary path again once handoff lands.
 
-**☐ C3b. Events — 9 channels, 7 of them subscriptions.**
-1. Port `hooks.ts` (345): the socket server provider bridges POST lifecycle
-   payloads to (`cth-hook`, `agy-hook`). Decide whether it shares the axum
-   server or binds its own listener per tenant. **This is now load-bearing for
-   the UI** — see the D0 decision; the conversation view is built from hook
-   events plus the transcript, not from screen-scraping.
-2. Port `transcript.ts` (341) — the session JSONL reader.
-3. Port `control.ts` (128) + `breaker.ts` (347) → `control:*` (7 channels).
-4. Port `reflect.ts` (437) → memory condensation; `hive:searchMemory` /
-   `hive:textSearch` / `hive:agentContext`.
-5. Port spawn/provisioning from `hive.ts`: agent directories, MCP config, the
-   hook shim, `roster.ts` (204).
+**☑ C3b. Hook server + operator control — 7 RPC + 3 push.**
+One Unix socket per tenant at `<hiveRoot>/hooks.sock`, mode 0600. **The socket
+path is the authorization** — it lives inside the tenant's own home, so there is
+no token to check and no way to name another tenant's agent.
+
+Boundaries are published to the tenant's WebSocket hub (`hive:hookEvent`,
+`hive:contextUpdate`, `control:approvalRequest`), and the reply rides Claude
+Code's own hook-return protocol: `permissionDecision: deny` for a paused or
+gated agent, `additionalContext` for a steer, `continue: false` for a halt.
+
+Order in `hooks::handle` is load-bearing and commented at each branch. Two that
+are easy to get wrong: `Status` is handled FIRST and returns early (it is
+telemetry, so a halted agent's status line must not answer `continue: false`
+forever), and `Stop` never converts unread mail into a forced continuation —
+that path bypasses the HITL safety and can spend credits mid-answer.
+
+Also shipped: `md-hook`, the shim the agent runs. It replaces `cth-hook.cjs`,
+which needed a Node runtime inside the agent environment; this is a static
+binary with **no dependencies**, since it runs many times per turn and its cost
+is startup time. It is a byte relay that never parses the JSON — the payload
+schema belongs to the CLI and the reply to the server. **Every failure path
+prints `{}` and exits 0**: a harness that is down must be invisible to the work,
+not a wedge in front of it.
+
+Known gap: mode 0600 is right for Passthrough and Container, where the agent
+shares the server's uid. `LocalUid` needs a shared group and 0660 — noted at the
+`restrict()` call site.
+
+**☐ C3c. Spawn lifecycle + search — 8 channels.**
+1. Port spawn/provisioning from `hive.ts`: agent directories, MCP config, hook
+   settings wiring, `roster.ts` (204). This is what fires `hive:agentSpawned`,
+   `hive:agentArchived`, `hive:enqueueToAgent` and `hive:message`.
+2. Port `transcript.ts` (341) — the session JSONL reader. Load-bearing for the
+   conversation view; see the D0 decision.
+3. Port `breaker.ts` (347) → `control:breakerState` / `control:setBreakerState`.
+4. Port `reflect.ts` (437) → `hive:searchMemory` / `hive:textSearch` /
+   `hive:agentContext`.
+5. Port `emitTerminalHandoff` → `hive:terminalHandoff`, which restores the
+   PRIMARY delivery path for hookless providers; today they bounce to the god.
 6. Restore the git single-committer (retry/backoff + stale-lock recovery); the
    write lock is a same-process stand-in, not a replacement.
 
