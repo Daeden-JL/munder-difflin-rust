@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/md-contract",
+    "crates/md-pty",
+    "crates/md-tenant",
+    "crates/md-server",
+]
+
+[workspace.package]
+version = "0.4.6"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/Daeden-JL/munder-difflin-rust"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

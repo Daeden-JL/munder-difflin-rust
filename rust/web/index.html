@@ -1,0 +1,255 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>munder difflin — dev console</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root {
+    --bg:#0e1116; --panel:#161b22; --line:#2b3441; --fg:#c9d3e0; --dim:#7c8798;
+    --ok:#4ec994; --err:#e5675a; --accent:#7aa2f7;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--fg); font-size:13px; line-height:1.5 }
+  header {
+    display:flex; align-items:center; gap:1rem; flex-wrap:wrap;
+    padding:.6rem 1rem; background:var(--panel); border-bottom:1px solid var(--line);
+    position:sticky; top:0; z-index:2;
+  }
+  h1 { font-size:13px; margin:0; font-weight:600; letter-spacing:.02em }
+  h2 { font-size:12px; margin:0 0 .6rem; color:var(--dim); text-transform:uppercase; letter-spacing:.08em }
+  .grow { flex:1 }
+  .pill { padding:.1rem .5rem; border:1px solid var(--line); border-radius:10px; color:var(--dim) }
+  .pill.ok { color:var(--ok); border-color:var(--ok) }
+  .pill.err { color:var(--err); border-color:var(--err) }
+  main { display:grid; grid-template-columns:repeat(auto-fit,minmax(420px,1fr)); gap:1rem; padding:1rem; align-items:start }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:1rem }
+  label { display:block; color:var(--dim); margin:.5rem 0 .15rem }
+  input, textarea, select, button {
+    font:inherit; background:var(--bg); color:var(--fg);
+    border:1px solid var(--line); border-radius:4px; padding:.35rem .5rem;
+  }
+  input, textarea, select { width:100% }
+  textarea { resize:vertical }
+  button { cursor:pointer; background:var(--line); border-color:var(--line) }
+  button:hover:not(:disabled) { border-color:var(--accent); color:var(--accent) }
+  button:disabled { opacity:.45; cursor:not-allowed }
+  .row { display:flex; gap:.5rem; margin-top:.6rem; flex-wrap:wrap }
+  .row > * { flex:1 }
+  pre {
+    background:var(--bg); border:1px solid var(--line); border-radius:4px;
+    padding:.6rem; margin:.6rem 0 0; max-height:20rem; overflow:auto;
+    white-space:pre-wrap; word-break:break-word;
+  }
+  pre.term { max-height:26rem }
+  .err { color:var(--err) } .ok { color:var(--ok) } .dim { color:var(--dim) }
+  .note { color:var(--dim); font-size:12px; border-left:2px solid var(--line); padding-left:.6rem; margin:0 0 .8rem }
+  fieldset { border:0; padding:0; margin:0 }
+  fieldset:disabled { opacity:.5 }
+</style>
+
+<header>
+  <h1>munder difflin <span class="dim">dev console</span></h1>
+  <span id="health" class="pill">health …</span>
+  <span id="authState" class="pill">signed out</span>
+  <span id="wsState" class="pill">ws closed</span>
+  <span class="grow"></span>
+  <button id="logout" style="flex:0" disabled>sign out</button>
+</header>
+
+<main>
+  <section>
+    <h2>Sign in</h2>
+    <p class="note">Credentials come from <code>MD_USER</code> / <code>MD_PASSWORD</code> on the server.</p>
+    <form id="loginForm">
+      <label for="user">user</label><input id="user" autocomplete="username" value="dev">
+      <label for="pass">password</label><input id="pass" type="password" autocomplete="current-password">
+      <div class="row"><button type="submit">sign in</button></div>
+    </form>
+    <pre id="loginOut" class="dim">—</pre>
+  </section>
+
+  <section>
+    <h2>RPC</h2>
+    <p class="note">
+      <span id="portedCount">12</span> of 161 channels are ported. Anything else
+      answers <code>not_implemented</code> — that is the port working, not a bug
+      (<code>hive:hookEvent</code> is in the list to show one).
+    </p>
+    <fieldset id="rpcFields" disabled>
+      <label for="channel">channel</label>
+      <select id="channel">
+        <option>app:info</option>
+        <option>config:get</option>
+        <option>config:update</option>
+        <option>fs:listDir</option>
+        <option>fs:statAbs</option>
+        <option>fs:readFile</option>
+        <option>fs:writeFile</option>
+        <option>pty:list</option>
+        <option>git:isRepo</option>
+        <option>git:branch</option>
+        <option>git:status</option>
+        <option>git:log</option>
+        <option>git:branches</option>
+        <option>git:aheadBehind</option>
+        <option>git:worktrees</option>
+        <option>git:diff</option>
+        <option>git:compareRefs</option>
+        <option>hive:registry</option>
+        <option>hive:tasks</option>
+        <option>hive:board</option>
+        <option>hive:log</option>
+        <option>hive:inbox</option>
+        <option>hive:memory</option>
+        <option>hive:send</option>
+        <option>hive:hookEvent</option>
+      </select>
+      <label for="args">args (JSON array)</label>
+      <textarea id="args" rows="3">[]</textarea>
+      <div class="row"><button id="send">send</button></div>
+    </fieldset>
+    <pre id="rpcOut" class="dim">—</pre>
+  </section>
+
+  <section style="grid-column:1/-1">
+    <h2>Terminal</h2>
+    <p class="note">
+      A raw byte sink, not a terminal emulator — escape sequences are stripped, so
+      full-screen programs will look wrong. Proving the transport is the point;
+      the real emulator is <code>alacritty_terminal</code> in the WASM client.
+    </p>
+    <fieldset id="ptyFields" disabled>
+      <div class="row">
+        <span><label for="ptyId">session id</label><input id="ptyId" value="dev-1"></span>
+        <span><label for="ptyCmd">command</label><input id="ptyCmd" value="bash"></span>
+        <span style="flex:0 0 auto; display:flex; gap:.5rem; align-items:flex-end">
+          <button id="spawn">spawn</button>
+          <button id="kill">kill</button>
+        </span>
+      </div>
+      <label for="stdin">stdin — Enter sends</label>
+      <input id="stdin" placeholder="echo hello" autocomplete="off">
+    </fieldset>
+    <pre id="term" class="term dim">—</pre>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const setPill = (el, text, cls) => { el.textContent = text; el.className = 'pill' + (cls ? ' ' + cls : ''); };
+
+// The session cookie is HttpOnly, so it rides along automatically and this page
+// never holds the token. `same-origin` is explicit because the cookie is
+// SameSite=Strict and a mistaken cross-origin fetch would silently drop it.
+const api = async (path, body) => {
+  const res = await fetch(path, {
+    method: body === undefined ? 'GET' : 'POST',
+    credentials: 'same-origin',
+    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return { status: res.status, body: await res.json().catch(() => null) };
+};
+
+let ws = null;
+
+function setAuthed(on) {
+  $('rpcFields').disabled = !on;
+  $('ptyFields').disabled = !on;
+  $('logout').disabled = !on;
+  setPill($('authState'), on ? 'signed in' : 'signed out', on ? 'ok' : '');
+  if (on) openSocket(); else if (ws) { ws.close(); ws = null; }
+}
+
+function openSocket() {
+  if (ws) return;
+  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+  ws.onopen = () => setPill($('wsState'), 'ws open', 'ok');
+  ws.onclose = () => { setPill($('wsState'), 'ws closed'); ws = null; };
+  ws.onerror = () => setPill($('wsState'), 'ws error', 'err');
+  ws.onmessage = (e) => {
+    let ev; try { ev = JSON.parse(e.data); } catch { return; }
+    if (ev.channel.startsWith('pty:data')) write(ev.payload);
+    else if (ev.channel.startsWith('pty:exit')) {
+      write(`\n[exit code ${ev.payload.exitCode}${ev.payload.signal ? ' signal ' + ev.payload.signal : ''}]\n`);
+    } else if (ev.channel.startsWith('pty:relaunch')) write('\n[relaunched]\n');
+  };
+}
+
+// Enough ANSI handling to keep shell output readable: OSC and CSI sequences out,
+// bare carriage returns turned into newlines. Anything richer needs an emulator.
+const stripAnsi = (s) => s
+  .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '')
+  .replace(/\x1b(?:[@-Z\\-_]|\[[0-?]*[ -\/]*[@-~])/g, '')
+  .replace(/\r(?!\n)/g, '\n');
+
+function write(chunk) {
+  const t = $('term');
+  if (t.classList.contains('dim')) { t.classList.remove('dim'); t.textContent = ''; }
+  t.textContent += stripAnsi(chunk);
+  t.scrollTop = t.scrollHeight;
+}
+
+function show(el, res) {
+  const failed = res.status >= 400 || res.body?.status === 'err';
+  el.className = failed ? 'err' : 'ok';
+  el.textContent = JSON.stringify(res.body, null, 2);
+}
+
+// The handler takes the channel from the path and the body is the bare
+// argument array, mirroring `ipcRenderer.invoke(channel, ...args)`.
+const rpc = (channel, args) => api(`/rpc/${channel}`, args);
+
+$('loginForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const res = await api('/api/login', { user: $('user').value, password: $('pass').value });
+  show($('loginOut'), res);
+  setAuthed(res.status === 200);
+};
+
+$('logout').onclick = async () => {
+  await api('/api/logout', {});
+  show($('loginOut'), { status: 200, body: { signedOut: true } });
+  setAuthed(false);
+};
+
+$('send').onclick = async (e) => {
+  e.preventDefault();
+  let args;
+  try { args = JSON.parse($('args').value || '[]'); }
+  catch (err) { return show($('rpcOut'), { status: 400, body: { error: `args is not JSON: ${err.message}` } }); }
+  if (!Array.isArray(args)) return show($('rpcOut'), { status: 400, body: { error: 'args must be an array' } });
+  show($('rpcOut'), await rpc($('channel').value, args));
+};
+
+$('spawn').onclick = async (e) => {
+  e.preventDefault();
+  const res = await rpc('pty:spawn', [{ id: $('ptyId').value, command: $('ptyCmd').value, cwd: '~', cols: 100, rows: 30 }]);
+  if (res.status >= 400 || res.body?.status === 'err') show($('rpcOut'), res);
+};
+
+$('kill').onclick = async (e) => {
+  e.preventDefault();
+  show($('rpcOut'), await rpc('pty:kill', [$('ptyId').value]));
+};
+
+$('stdin').onkeydown = (e) => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  if (ws?.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'ptyInput', id: $('ptyId').value, data: e.target.value + '\r' }));
+  e.target.value = '';
+};
+
+// Health doubles as a session probe: an authenticated call that succeeds means a
+// cookie from an earlier visit is still good, so a reload does not sign you out.
+(async () => {
+  const h = await api('/api/health');
+  if (h.body?.ok) {
+    setPill($('health'), `v${h.body.version} · ${h.body.portedChannels}/${h.body.totalChannels}`, 'ok');
+    $('portedCount').textContent = h.body.portedChannels;
+  } else setPill($('health'), 'health failed', 'err');
+
+  setAuthed((await rpc('app:info', [])).status !== 401);
+})();
+</script>

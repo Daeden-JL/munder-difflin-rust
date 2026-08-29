@@ -1,0 +1,8 @@
+# The build only needs rust/ and contract/. Everything else is context weight —
+# the repo carries a 12MB JS bundle, 847 PNGs, and video.
+*
+!rust/
+!contract/
+rust/target/
+**/node_modules/
+**/.git/

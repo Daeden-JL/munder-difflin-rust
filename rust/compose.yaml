@@ -1,0 +1,48 @@
+# Test deployment of md-server.
+#
+#   docker compose -f rust/compose.yaml up -d --build
+#
+# Reachable from the LAN at https://192.168.99.8:9876/ — see rust/README.md.
+#
+# MD_PUBLISH_ADDR (from rust/.env) decides who can reach this. It is bound to a
+# SPECIFIC host address rather than 0.0.0.0 on purpose: this host also has a VPN
+# interface, and 0.0.0.0 would publish an agent-spawning service there too.
+# Set it to 127.0.0.1 to go back to loopback-only.
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: rust/Dockerfile
+    image: munder-difflin/server:dev
+    container_name: md-server-test
+    ports:
+      - "${MD_PUBLISH_ADDR:-127.0.0.1}:9876:7777"
+    env_file:
+      - .env
+    environment:
+      MD_BIND: "0.0.0.0:7777"
+      MD_DATA_ROOT: "/home/md/data"
+      # The container is the isolation boundary for this single-tenant test
+      # instance, so the in-process sandbox is passthrough.
+      MD_SANDBOX: "passthrough"
+      # TLS, because the login password and session token now cross a network.
+      # Delete these two lines (and restart) to serve plain HTTP instead.
+      MD_TLS_CERT: "/etc/md/certs/server.crt"
+      MD_TLS_KEY: "/etc/md/certs/server.key"
+      # The dev console. Replaced by the built WASM client once it exists.
+      MD_STATIC_DIR: "/srv/web"
+      RUST_LOG: "md_server=info,tower_http=info"
+    volumes:
+      - md-data:/home/md/data
+      - ./certs:/etc/md/certs:ro
+      - ./web:/srv/web:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/md-server", "--health-check"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  md-data:
