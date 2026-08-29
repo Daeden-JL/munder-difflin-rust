@@ -93,6 +93,17 @@ impl Hive {
         std::fs::rename(&tmp, path)
     }
 
+    /// Persist the registry. Public so provisioning can upsert an agent record
+    /// through the same atomic write every other writer uses.
+    pub fn write_registry(&self, reg: &Value) -> std::io::Result<()> {
+        self.write_json(&self.root.join("registry.json"), reg)
+    }
+
+    /// Append one hive event. Public for the same reason as `write_registry`.
+    pub fn log(&self, event: Value) {
+        self.append_log(event);
+    }
+
     /// Append one event to `log.jsonl`. Best-effort by design: losing a log line
     /// must never fail the operation that produced it.
     fn append_log(&self, event: Value) {

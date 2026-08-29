@@ -1,6 +1,6 @@
 # Port checklist
 
-**Status: 47 of 161 RPC channels + 6 of 28 push channels served.** Regenerate this count any time:
+**Status: 47 of 161 RPC channels + 8 of 28 push channels served.** Regenerate this count any time:
 
 ```sh
 cd rust && cargo test -p md-server port_coverage -- --nocapture
@@ -9,17 +9,18 @@ cd rust && cargo test -p md-server port_coverage -- --nocapture
 Done so far: the contract extractor, the Cargo workspace, the axum core
 (auth + tenancy + RPC + WebSocket), the sandbox trait with two backends, the PTY
 core, a LAN-reachable test container, the git plane (14 channels), the hive
-state layer (14), the hook server + operator control (7 RPC + 3 push), the
-`md-hook` shim, and a dev console at `/`. Everything below is what remains.
+state layer (14), the hook server + operator control (7 RPC + 3 push), agent
+provisioning (claude only, +2 push), the `md-hook` shim, and a dev console at
+`/`. Everything below is what remains.
 
 ---
 
 ## How much until it looks like the desktop app?
 
-Not 161 channels — **39**. That is the unported set reachable from the main
+Not 161 channels — **37**. That is the unported set reachable from the main
 screen's own call sites (`App`, the store, `useHive`, `AgentStrip`, `AgentCard`,
 `CommandCenterPanel`, `OfficeFloor`, the composer, the pty views), as opposed to
-99 unported across the whole renderer including every modal and settings tab.
+97 unported across the whole renderer including every modal and settings tab.
 
 Measured, not estimated:
 
@@ -32,14 +33,14 @@ The gap is dominated by one namespace:
 | namespace | unported | what it blocks |
 |---|---|---|
 | `app:` | 10 | mostly Electron-native; see `contract/PORTING-NOTES.md` |
-| `hive:` | 8 | 4 spawn-lifecycle pushes, 3 search, 1 terminal handoff |
+| `hive:` | 6 | 3 search, 2 router pushes, 1 terminal handoff |
 | `hire:` | 3 | agent creation |
 | everything else | 18 | thirteen namespaces, 1–2 channels each |
 
-The floor can be drawn *and* it updates itself: tool calls, denials and context
-occupancy now arrive live. What is left in `hive:` is mostly the **spawn**
-lifecycle (`agentSpawned`, `agentArchived`, `enqueueToAgent`, `message`) — those
-fire from agent provisioning, which is the next unit, not from more hook work.
+The floor can be drawn, it updates itself, and agents can be spawned into it.
+`app:` is now the largest block and is mostly *not* work — see
+`contract/PORTING-NOTES.md`, where each Electron-native channel already has a
+browser substitute or is deleted outright.
 
 ---
 
@@ -138,10 +139,35 @@ Known gap: mode 0600 is right for Passthrough and Container, where the agent
 shares the server's uid. `LocalUid` needs a shared group and 0660 — noted at the
 `restrict()` call site.
 
-**☐ C3c. Spawn lifecycle + search — 8 channels.**
-1. Port spawn/provisioning from `hive.ts`: agent directories, MCP config, hook
-   settings wiring, `roster.ts` (204). This is what fires `hive:agentSpawned`,
-   `hive:agentArchived`, `hive:enqueueToAgent` and `hive:message`.
+**◐ C3c. Spawn lifecycle — claude done, other providers not.**
+`pty:spawn` with a `hive` block now provisions the agent: workspace
+(`inbox/.done`, `outbox/.sent`, `identity.md`, `memory.md`, `cursor.json`),
+registry upsert, and a per-session `settings.json` pointing every lifecycle hook
+at `md-hook`. Fires `hive:agentSpawned` (after the pty is actually up, so the
+floor never draws an agent that failed to start) and `hive:agentArchived`.
+
+Verified as a full loop: spawn → the CLI reports `SessionStart` through the shim
+→ the registry records `sessionId` → a respawn with `requireResume` attaches
+`--resume <id>`.
+
+Rules worth keeping when this is extended:
+- `identity.md` is refreshed every spawn (generated, so a stale copy lies);
+  `memory.md` is seeded ONCE (durable, so a rewrite would erase what the agent
+  learned).
+- The registry upsert spreads the PRIOR entry first, or a respawn wipes
+  `sessionId` and every restart silently begins a fresh thread.
+- A status-like caption ("on standby") must never overwrite a durable hire role;
+  a restart passes the roster's caption, so this fires on the common path.
+- An unported provider is REFUSED, not half-provisioned — an agent without hooks
+  looks live on the floor while reporting nothing.
+- Resume is resolved BEFORE provisioning, so a failed `requireResume` leaves
+  nothing behind. (Electron provisions first and leaves a registry entry for an
+  agent that never started; the lookup does not need that order, because
+  `sessionId` is only ever written by the hook server.)
+
+**☐ C3d. Remaining hive — 6 channels + the other providers.**
+1. Provider bridges: `agy`, `codex`, `pi` (config-file hook shims) and the
+   `qwen` reverse-proxy sidecar. Each has its own shim and config layout.
 2. Port `transcript.ts` (341) — the session JSONL reader. Load-bearing for the
    conversation view; see the D0 decision.
 3. Port `breaker.ts` (347) → `control:breakerState` / `control:setBreakerState`.
@@ -149,8 +175,16 @@ shares the server's uid. `LocalUid` needs a shared group and 0660 — noted at t
    `hive:agentContext`.
 5. Port `emitTerminalHandoff` → `hive:terminalHandoff`, which restores the
    PRIMARY delivery path for hookless providers; today they bounce to the god.
-6. Restore the git single-committer (retry/backoff + stale-lock recovery); the
+6. The outbox router (`hive:message`, `hive:enqueueToAgent`): a watcher that
+   drains each agent's `outbox/` into recipients' inboxes.
+7. Restore the git single-committer (retry/backoff + stale-lock recovery); the
    write lock is a same-process stand-in, not a replacement.
+
+**Debugging note.** `md-hook` fails OPEN — any error prints `{}` and exits 0, so
+a broken harness never wedges an agent. The cost is that a failure looks like a
+successful no-op. When hooks appear to do nothing, read the shim's **stderr**;
+it names the real cause (this bit during testing, when the socket had been
+deleted out from under a running server).
 
 **Do not port this from a reading of the source.** Record traces from the running
 Electron app and replay them; the routing and wakeup timing carry behavior the

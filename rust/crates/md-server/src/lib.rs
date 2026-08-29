@@ -7,6 +7,7 @@ pub mod hooks;
 pub mod hive;
 pub mod handlers;
 pub mod rpc;
+pub mod spawn;
 pub mod state;
 pub mod ws;
 

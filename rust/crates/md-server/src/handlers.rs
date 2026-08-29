@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 
 use crate::git;
 use crate::hive;
+use crate::spawn;
 use crate::rpc::Op;
 use crate::state::AppState;
 
@@ -171,7 +172,24 @@ fn hive_op(op: Op, ctx: &Ctx) -> RpcResponse {
         Op::HivePatchAgentRole => {
             h.patch_agent_role(&tri!(ctx.arg::<String>(0)), &tri!(ctx.arg::<String>(1)))
         }
-        Op::HiveSetArchived => h.set_archived(&tri!(ctx.arg::<String>(0)), tri!(ctx.arg::<bool>(1))),
+        Op::HiveSetArchived => {
+            let id: String = tri!(ctx.arg(0));
+            let archived: bool = tri!(ctx.arg(1));
+            let out = h.set_archived(&id, archived);
+            // Announced only on a successful archive: the floor removes the desk
+            // on this event, and firing it for a failed call would erase an agent
+            // that is still there.
+            if archived && out.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                ctx.state.hub.publish(
+                    &ctx.tenant,
+                    md_contract::ServerEvent::new(
+                        md_contract::Push::HiveAgentArchived,
+                        json!({ "id": id }),
+                    ),
+                );
+            }
+            out
+        }
         Op::HiveSetAgentHold => h.set_agent_hold(&tri!(ctx.arg::<String>(0)), tri!(ctx.arg::<bool>(1))),
         // `from` defaults to 'system'; the renderer passes 'human' for anything a
         // person dispatched, which is what the analytics counter keys on.
@@ -354,6 +372,12 @@ fn fs_write_file(ctx: &Ctx) -> RpcResponse {
     }
 }
 
+/// Where the shim lives inside the agent's environment. Overridable because the
+/// container path and a local dev build differ; the default matches the image.
+fn hook_bin() -> String {
+    std::env::var("MD_HOOK_BIN").unwrap_or_else(|_| "/usr/local/bin/md-hook".into())
+}
+
 fn pty_spawn(ctx: &Ctx) -> RpcResponse {
     let opts: Value = tri!(ctx.arg(0));
     let id = match opts.get("id").and_then(|v| v.as_str()) {
@@ -363,7 +387,7 @@ fn pty_spawn(ctx: &Ctx) -> RpcResponse {
     let command = opts.get("command").and_then(|v| v.as_str()).unwrap_or("bash").to_string();
     let raw_cwd = opts.get("cwd").and_then(|v| v.as_str()).unwrap_or("~").to_string();
     let cwd = tri!(ctx.resolve(&raw_cwd));
-    let args: Vec<String> = opts.get("args")
+    let mut args: Vec<String> = opts.get("args")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
     let cols = opts.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
@@ -372,6 +396,59 @@ fn pty_spawn(ctx: &Ctx) -> RpcResponse {
     let mut env = std::collections::HashMap::new();
     env.insert("TERM".to_string(), "xterm-256color".to_string());
     env.insert("HOME".to_string(), ctx.paths.home().display().to_string());
+
+    // `hive` present means "provision this as an agent, not a bare shell".
+    // Provisioning runs BEFORE the spawn and its failure aborts it: an agent
+    // that starts without its hooks looks live on the floor while reporting
+    // nothing, which is worse than not starting.
+    let hive_meta = opts.get("hive").cloned();
+    if let Some(meta) = &hive_meta {
+        let m = spawn::AgentMeta {
+            id: id.clone(),
+            name: meta.get("name").and_then(|v| v.as_str()).unwrap_or(&id).to_string(),
+            provider: meta.get("provider").and_then(|v| v.as_str()).unwrap_or("claude").to_string(),
+            role: meta.get("role").and_then(|v| v.as_str()).map(String::from),
+            cwd: cwd.display().to_string(),
+            is_god: meta.get("isGod").and_then(|v| v.as_bool()).unwrap_or(false),
+        };
+        let hive = hive::Hive::new(ctx.paths.hive_root());
+
+        // Resume is resolved BEFORE provisioning, so a `requireResume` failure
+        // leaves nothing behind. The lookup is unaffected by the order:
+        // `sessionId` is written only by the hook server and merely PRESERVED by
+        // provisioning, so it reads the same either way. (Electron provisions
+        // first and so leaves a registry entry for an agent that never started.)
+        let mut resume_args = Vec::new();
+        if opts.get("resume").and_then(|v| v.as_bool()).unwrap_or(false) {
+            match hive.registry()["agents"][&id]["sessionId"].as_str() {
+                Some(sid) if !sid.is_empty() => {
+                    resume_args.push("--resume".to_string());
+                    resume_args.push(sid.to_string());
+                }
+                // `requireResume` exists so a caller that needs continuity fails
+                // loudly instead of quietly starting a fresh thread.
+                _ if opts.get("requireResume").and_then(|v| v.as_bool()).unwrap_or(false) => {
+                    return RpcResponse::ok(
+                        json!({ "ok": false, "error": "no recorded session to resume" }),
+                    )
+                }
+                _ => {}
+            }
+        }
+
+        let p = spawn::Provisioner {
+            hive: &hive,
+            hive_root: ctx.paths.hive_root(),
+            hook_bin: hook_bin(),
+        };
+        let injection = match p.ensure_agent(&m) {
+            Ok(i) => i,
+            Err(e) => return RpcResponse::ok(json!({ "ok": false, "error": e })),
+        };
+        args.extend(resume_args);
+        args.extend(injection.args);
+        env.extend(injection.env);
+    }
 
     let req = SpawnRequest {
         tenant: ctx.tenant.clone(),
@@ -383,6 +460,19 @@ fn pty_spawn(ctx: &Ctx) -> RpcResponse {
         Ok(rx) => rx,
         Err(e) => return RpcResponse::ok(json!({ "ok": false, "error": e.to_string() })),
     };
+
+    // Announced only after the pty is actually up, so the floor never draws an
+    // agent that failed to start.
+    if let Some(meta) = hive_meta {
+        let mut rec = meta.as_object().cloned().unwrap_or_default();
+        rec.insert("id".into(), json!(id));
+        rec.insert("cwd".into(), json!(cwd.display().to_string()));
+        rec.insert("command".into(), json!(command));
+        ctx.state.hub.publish(
+            &ctx.tenant,
+            md_contract::ServerEvent::new(md_contract::Push::HiveAgentSpawned, Value::Object(rec)),
+        );
+    }
 
     // Pump this session's frames onto the tenant's push channel. The task ends
     // when the pty closes its sender, so a dead session stops costing anything.
