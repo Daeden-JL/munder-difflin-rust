@@ -49,7 +49,13 @@ struct Page {
 }
 
 #[component]
-pub fn Conversation(agent: RwSignal<Option<String>>, activity: RwSignal<u32>) -> impl IntoView {
+pub fn Conversation(
+    agent: RwSignal<Option<String>>,
+    activity: RwSignal<u32>,
+    /// Who the selected agent is dressed as, so the header can say something
+    /// about them. Personality you can read, not only overhear on the floor.
+    persona: Signal<Option<(String, String)>>,
+) -> impl IntoView {
     // Carries an explicit sequence number: entries are append-only and never
     // change, so the index is a stable key and the list never re-renders what
     // is already on screen.
@@ -154,6 +160,12 @@ pub fn Conversation(agent: RwSignal<Option<String>>, activity: RwSignal<u32>) ->
 
     view! {
         <main class="convo">
+            <Show when=move || persona.get().is_some()>
+                <div class="persona">
+                    <b>{move || persona.get().map(|p| p.0).unwrap_or_default()}</b>
+                    <i>{move || persona.get().map(|p| p.1).unwrap_or_default()}</i>
+                </div>
+            </Show>
             <div class="stream" node_ref=stream_ref on:scroll=on_scroll>
                 <Show when=move || agent.get().is_none()>
                     <p class="empty">"Pick an agent."</p>

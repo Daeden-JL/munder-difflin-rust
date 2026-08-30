@@ -56,29 +56,9 @@ pub fn station_for(tool: &str) -> &'static str {
     }
 }
 
-/// A place on the floor, in art pixels. Agents stand just below a station and
-/// face it.
-struct Station {
-    kind: &'static str,
-    label: &'static str,
-    x: f64,
-    y: f64,
-    w: f64,
-}
-
-/// The room. Hand-placed rather than loaded from the Tiled map: the `.tmj`
-/// carries a tileset image this client does not ship, and the layout is what
-/// matters — a bookshelf on the left, terminals on the right, the board on the
-/// back wall, desks in the middle.
-fn stations() -> Vec<Station> {
-    vec![
-        Station { kind: "board", label: "BOARD", x: 120.0, y: 14.0, w: 76.0 },
-        Station { kind: "shelf", label: "SHELF", x: 10.0, y: 30.0, w: 26.0 },
-        Station { kind: "web", label: "WEB", x: 274.0, y: 30.0, w: 36.0 },
-        Station { kind: "terminal", label: "TERM", x: 274.0, y: 96.0, w: 36.0 },
-        Station { kind: "mailbox", label: "MAIL", x: 10.0, y: 120.0, w: 26.0 },
-    ]
-}
+/// How long a spoken line stays up. Long enough to read, short enough that the
+/// floor does not turn into a wall of text.
+const SAY_SECS: f64 = 4.0;
 
 /// One agent's motion state. Kept OUTSIDE the reactive graph: it changes every
 /// frame, and routing sixty updates a second through signals would re-render
@@ -89,22 +69,34 @@ struct Walker {
     tx: f64,
     ty: f64,
     /// Which station it is heading to, if any. `None` means wandering.
-    at: Option<&'static str>,
+    at: Option<String>,
     facing_back: bool,
     step: u8,
     step_t: f64,
     linger: f64,
+    /// Where this theme lets an agent wander.
+    roam: [f64; 4],
     /// A per-agent deterministic seed, so wandering differs between agents but
     /// is not driven by a shared global.
     seed: u32,
+    /// What this character is saying, and for how long. Flavour is the point of
+    /// the floor: a room of silent figures is a status board with legs.
+    saying: Option<String>,
+    say_t: f64,
+    /// How restless this character is, from its personality.
+    restless: f64,
 }
 
 impl Walker {
-    fn new(index: usize, seed: u32) -> Self {
-        // Start spread along the desk row rather than stacked at the origin.
-        let x = 60.0 + (index as f64 * 34.0) % 180.0;
-        let y = 96.0 + ((index % 2) as f64) * 22.0;
-        Self { x, y, tx: x, ty: y, at: None, facing_back: false, step: 0, step_t: 0.0, linger: 0.0, seed }
+    fn new(index: usize, seed: u32, roam: [f64; 4], restless: f64) -> Self {
+        // Start spread across the roaming area rather than stacked at the origin.
+        let [x0, y0, x1, y1] = roam;
+        let x = x0 + ((index as f64 * 37.0) % (x1 - x0).max(1.0));
+        let y = y0 + ((index % 3) as f64) * ((y1 - y0) / 3.0);
+        Self {
+            x, y, tx: x, ty: y, at: None, facing_back: false, step: 0, step_t: 0.0,
+            linger: 0.0, roam, seed, saying: None, say_t: 0.0, restless,
+        }
     }
 
     /// A cheap deterministic PRNG. `Math.random` would do, but a per-walker
@@ -118,7 +110,25 @@ impl Walker {
         (self.tx - self.x).abs() < 1.0 && (self.ty - self.y).abs() < 1.0
     }
 
-    fn advance(&mut self, dt: f64) {
+    /// Say something, unless already mid-sentence — interrupting a line the
+    /// reader has not finished is worse than staying quiet.
+    fn say(&mut self, lines: &[String]) {
+        if self.saying.is_some() || lines.is_empty() {
+            return;
+        }
+        let i = (self.rand() * lines.len() as f64) as usize;
+        self.saying = Some(lines[i.min(lines.len() - 1)].clone());
+        self.say_t = SAY_SECS;
+    }
+
+    fn advance(&mut self, dt: f64, p: &theme::Personality) {
+        if self.saying.is_some() {
+            self.say_t -= dt;
+            if self.say_t <= 0.0 {
+                self.saying = None;
+            }
+        }
+
         if !self.arrived() {
             let (dx, dy) = (self.tx - self.x, self.ty - self.y);
             let dist = (dx * dx + dy * dy).sqrt().max(0.001);
@@ -146,14 +156,23 @@ impl Walker {
         }
         self.linger -= dt;
         if self.linger <= 0.0 {
-            self.linger = LINGER_SECS + self.rand() * LINGER_SECS;
-            self.tx = 50.0 + self.rand() * (ROOM_W - 110.0);
-            self.ty = 84.0 + self.rand() * 56.0;
+            // A restless character lingers briefly; a still one settles. This is
+            // the personality showing in movement rather than only in words.
+            let patience = 1.0 - self.restless.clamp(0.0, 1.0);
+            self.linger = LINGER_SECS * (0.4 + patience * 1.8) + self.rand() * LINGER_SECS;
+            let [x0, y0, x1, y1] = self.roam;
+            self.tx = x0 + self.rand() * (x1 - x0);
+            self.ty = y0 + self.rand() * (y1 - y0);
+            // Muttering on settling, not on a timer: the line reads as a thought
+            // rather than a ticker.
+            if self.rand() < 0.45 {
+                self.say(&p.idle);
+            }
         }
     }
 
-    fn send_to(&mut self, s: &Station) {
-        self.at = Some(s.kind);
+    fn send_to(&mut self, s: &theme::Station) {
+        self.at = Some(s.kind.clone());
         // Stand below the station, so the figure does not cover the label.
         self.tx = s.x + s.w / 2.0 - pixel::SCENE_W as f64 / 2.0;
         self.ty = s.y + 20.0;
@@ -239,6 +258,14 @@ pub fn character_name(theme: &Theme, archetype: &str) -> Option<String> {
     theme.character(archetype).map(|c| c.display.clone())
 }
 
+/// The one-line self-description for a character.
+pub fn character_trait(theme: &Theme, archetype: &str) -> Option<String> {
+    theme
+        .character(archetype)
+        .map(|c| c.personality.trait_line.clone())
+        .filter(|t| !t.is_empty())
+}
+
 /// One character's portrait as a data URL, for use in ordinary DOM.
 ///
 /// The floor draws walking figures; the roster wants a face. Both come from the
@@ -270,6 +297,9 @@ pub fn Floor(
     /// The most recent `(agentId, tool)` from the hook stream. Changing it is
     /// what sends an agent to a station.
     activity: RwSignal<Option<(String, String)>>,
+    /// agent id → archetype. Passed in rather than recomputed so the floor and
+    /// the roster cannot disagree about who is dressed as whom.
+    archetypes: Signal<HashMap<String, String>>,
 ) -> impl IntoView {
     let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
     let sprites = Rc::new(RefCell::new(Sprites::default()));
@@ -285,10 +315,18 @@ pub fn Floor(
         Effect::new(move |_| {
             let Some((id, tool)) = activity.get() else { return };
             let kind = station_for(&tool);
-            let all = stations();
-            let Some(s) = all.iter().find(|s| s.kind == kind) else { return };
-            if let Some(w) = walkers.borrow_mut().get_mut(&id) {
-                w.send_to(s);
+            let themes = theme::builtin();
+            let Some(t) = themes.get(theme.get_untracked() % themes.len().max(1)) else { return };
+            let Some(station) = t.layout.stations.iter().find(|s| s.kind == kind) else { return };
+
+            let mut ws = walkers.borrow_mut();
+            let Some(w) = ws.get_mut(&id) else { return };
+            w.send_to(station);
+            // Say something on being given work, so the floor narrates itself.
+            if let Some(arch) = archetypes.get_untracked().get(&id) {
+                if let Some(c) = t.character(arch) {
+                    w.say(&c.personality.working);
+                }
             }
         });
     }
@@ -329,11 +367,49 @@ pub fn Floor(
                     for (i, o) in list.iter().enumerate() {
                         if !w.contains_key(&o.id) {
                             let seed = o.id.bytes().fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
-                            w.insert(o.id.clone(), Walker::new(i, seed));
+                            let restless = t.character(&o.archetype)
+                                .map(|c| c.personality.restless)
+                                .unwrap_or(0.5);
+                            w.insert(o.id.clone(), Walker::new(i, seed, t.layout.roam, restless));
                         }
                     }
-                    for walker in w.values_mut() {
-                        walker.advance(dt);
+                    for o in list.iter() {
+                        let p = t.character(&o.archetype).map(|c| c.personality.clone()).unwrap_or_default();
+                        if let Some(walker) = w.get_mut(&o.id) {
+                            // The roam box belongs to the THEME, so switching
+                            // themes has to re-home everyone or they wander into
+                            // the new room's walls.
+                            walker.roam = t.layout.roam;
+                            walker.restless = p.restless;
+                            walker.advance(dt, &p);
+                        }
+                    }
+
+                    // Two characters standing together greet each other. This is
+                    // the interaction the floor is FOR — a room where nobody
+                    // acknowledges anybody is a status board with legs.
+                    let ids: Vec<String> = list.iter().map(|o| o.id.clone()).collect();
+                    for i in 0..ids.len() {
+                        for j in (i + 1)..ids.len() {
+                            let near = match (w.get(&ids[i]), w.get(&ids[j])) {
+                                (Some(a), Some(b)) => {
+                                    (a.x - b.x).abs() < 22.0 && (a.y - b.y).abs() < 10.0
+                                        && a.arrived() && b.arrived()
+                                }
+                                _ => false,
+                            };
+                            if !near {
+                                continue;
+                            }
+                            let arch = list[i].archetype.clone();
+                            let lines = t.character(&arch).map(|c| c.personality.greet.clone()).unwrap_or_default();
+                            if let Some(a) = w.get_mut(&ids[i]) {
+                                // Rare, or neighbours would chatter constantly.
+                                if a.saying.is_none() && a.rand() < 0.02 {
+                                    a.say(&lines);
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -416,41 +492,33 @@ fn draw(
     ctx.save();
     let _ = ctx.scale(SCALE, SCALE);
 
-    let floor = t.floor.as_deref().unwrap_or("#c8b89a");
-    let wall = t.wall.as_deref().unwrap_or("#e8e0d0");
-
-    // Wall band across the back, then the floor. The wall is what makes it read
-    // as a room rather than a rug.
-    ctx.set_fill_style_str(wall);
-    ctx.fill_rect(0.0, 0.0, ROOM_W, 46.0);
-    ctx.set_fill_style_str(floor);
-    ctx.fill_rect(0.0, 46.0, ROOM_W, ROOM_H - 46.0);
-    // Skirting, to separate the two planes.
-    ctx.set_fill_style_str("#8a7c66");
-    ctx.fill_rect(0.0, 44.0, ROOM_W, 2.0);
-
-    // Desk row down the middle, where agents idle.
-    ctx.set_fill_style_str("#a08d70");
-    for i in 0..4 {
-        let x = 56.0 + i as f64 * 56.0;
-        ctx.fill_rect(x, 120.0, 44.0, 14.0);
-        ctx.set_fill_style_str("#8a7659");
-        ctx.fill_rect(x, 132.0, 44.0, 3.0);
-        ctx.set_fill_style_str("#a08d70");
+    // The room comes from the THEME. A bridge is not an office, and dressing
+    // one room differently would make every theme a palette swap.
+    let l = &t.layout;
+    ctx.set_fill_style_str(&l.wall);
+    ctx.fill_rect(0.0, 0.0, ROOM_W, l.wall_depth);
+    ctx.set_fill_style_str(&l.floor);
+    ctx.fill_rect(0.0, l.wall_depth, ROOM_W, ROOM_H - l.wall_depth);
+    if let Some(trim) = &l.trim {
+        ctx.set_fill_style_str(trim);
+        ctx.fill_rect(0.0, l.wall_depth - 2.0, ROOM_W, 2.0);
     }
 
-    for s in stations() {
-        ctx.set_fill_style_str(match s.kind {
-            "board" => "#7a6a4e",
-            "shelf" => "#6f5b40",
-            "web" => "#4e6070",
-            "terminal" => "#3f4650",
-            _ => "#6a6a72",
-        });
-        ctx.fill_rect(s.x, s.y, s.w, 22.0);
-        ctx.set_fill_style_str("#2a2620");
-        ctx.set_font("7px ui-monospace, monospace");
-        let _ = ctx.fill_text(s.label, s.x + 3.0, s.y + 13.0);
+    let fcol = l.furniture_color.as_deref().unwrap_or("#a08d70");
+    for [x, y, w, h] in &l.furniture {
+        ctx.set_fill_style_str(fcol);
+        ctx.fill_rect(*x, *y, *w, *h);
+        // A darker lip along the front edge gives the slab some depth.
+        ctx.set_fill_style_str("rgba(0,0,0,0.22)");
+        ctx.fill_rect(*x, y + h - 2.0, *w, 2.0);
+    }
+
+    for st in &l.stations {
+        ctx.set_fill_style_str(st.color.as_deref().unwrap_or("#6a6a72"));
+        ctx.fill_rect(st.x, st.y, st.w, 22.0);
+        ctx.set_fill_style_str("rgba(255,255,255,0.82)");
+        ctx.set_font("6px ui-monospace, monospace");
+        let _ = ctx.fill_text(&st.label, st.x + 3.0, st.y + 13.0);
     }
 
     // Back to front, so a figure lower on the floor overlaps one behind it.
@@ -486,15 +554,36 @@ fn draw(
             ctx.stroke_rect(w.x - 1.5, w.y - 1.5, pixel::SCENE_W as f64 + 3.0, pixel::SCENE_H as f64 + 3.0);
         }
 
-        // Name plate under the feet, with a status pip.
         let cx = w.x + pixel::SCENE_W as f64 / 2.0;
+
+        // Speech. Drawn above the head so it never covers the figure, and
+        // clamped to the room so a line near an edge stays readable.
+        if let Some(line) = &w.saying {
+            ctx.set_font("6px ui-monospace, monospace");
+            ctx.set_text_align("center");
+            let bw = (line.chars().count() as f64 * 3.5 + 8.0).min(150.0);
+            let bx = (cx - bw / 2.0).clamp(2.0, ROOM_W - bw - 2.0);
+            let by = w.y - 12.0;
+            ctx.set_fill_style_str("rgba(248,250,252,0.94)");
+            ctx.fill_rect(bx, by, bw, 10.0);
+            // A little tail, so the bubble belongs to this figure.
+            ctx.fill_rect(cx - 1.5, by + 10.0, 3.0, 2.0);
+            ctx.set_fill_style_str("#1b2028");
+            let _ = ctx.fill_text(line, bx + bw / 2.0, by + 7.0);
+            ctx.set_text_align("start");
+        }
+
+        // The name plate shows who they are DRESSED AS. Switching themes is
+        // supposed to change who you are looking at, and a label that kept the
+        // agent's own name made the change invisible.
+        let shown = t.character(&o.archetype).map(|c| c.display.clone()).unwrap_or_else(|| o.name.clone());
         ctx.set_font("6px ui-monospace, monospace");
         ctx.set_text_align("center");
-        ctx.set_fill_style_str("rgba(20,24,30,0.55)");
-        let label_w = (o.name.len() as f64 * 3.6).max(14.0) + 8.0;
+        ctx.set_fill_style_str("rgba(20,24,30,0.62)");
+        let label_w = (shown.chars().count() as f64 * 3.6).max(14.0) + 10.0;
         ctx.fill_rect(cx - label_w / 2.0, w.y + pixel::SCENE_H as f64 + 1.0, label_w, 8.0);
         ctx.set_fill_style_str("#e6edf6");
-        let _ = ctx.fill_text(&o.name, cx + 2.0, w.y + pixel::SCENE_H as f64 + 7.0);
+        let _ = ctx.fill_text(&shown, cx + 2.0, w.y + pixel::SCENE_H as f64 + 7.0);
         ctx.set_fill_style_str(status_colour(&o.status, o.live));
         ctx.fill_rect(cx - label_w / 2.0 + 2.0, w.y + pixel::SCENE_H as f64 + 3.0, 3.0, 3.0);
         ctx.set_text_align("start");

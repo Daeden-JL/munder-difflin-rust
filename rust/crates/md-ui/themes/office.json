@@ -28,6 +28,23 @@
         ],
         "brow": "flat",
         "mouth": "smile"
+      },
+      "personality": {
+        "traitLine": "Wants to be liked more than obeyed.",
+        "idle": [
+          "Is anyone else hungry?",
+          "I'm not superstitious, but I am a little stitious.",
+          "Do I need to be liked? Absolutely not."
+        ],
+        "working": [
+          "Okay. Okay. I've got this.",
+          "This is going to be great."
+        ],
+        "greet": [
+          "Hey! Look who it is.",
+          "There he is!"
+        ],
+        "restless": 0.85
       }
     },
     "second": {
@@ -56,6 +73,23 @@
         "glasses": true,
         "brow": "angry",
         "mouth": "neutral"
+      },
+      "personality": {
+        "traitLine": "Believes every rule is load-bearing.",
+        "idle": [
+          "Fact: this desk is regulation height.",
+          "Identity theft is not a joke.",
+          "I am faster than 80% of all snakes."
+        ],
+        "working": [
+          "Consider it handled. Properly.",
+          "I will do this correctly."
+        ],
+        "greet": [
+          "Report.",
+          "State your business."
+        ],
+        "restless": 0.3
       }
     },
     "operator": {
@@ -81,6 +115,23 @@
         ],
         "brow": "flat",
         "mouth": "smile"
+      },
+      "personality": {
+        "traitLine": "Doing the minimum, beautifully.",
+        "idle": [
+          "...",
+          "Bears. Beets. Battlestar Galactica.",
+          "I'm gonna let that one go."
+        ],
+        "working": [
+          "Alright, let's see.",
+          "Sure, why not."
+        ],
+        "greet": [
+          "Hey.",
+          "How's it going."
+        ],
+        "restless": 0.55
       }
     },
     "engineer": {
@@ -107,6 +158,23 @@
         "brow": "flat",
         "mouth": "neutral",
         "heavy": true
+      },
+      "personality": {
+        "traitLine": "Here for the food, stays for the numbers.",
+        "idle": [
+          "I just want to lie on the floor.",
+          "Is it lunch?",
+          "Me think, why waste time say lot word."
+        ],
+        "working": [
+          "Numbers. Okay.",
+          "On it, chief."
+        ],
+        "greet": [
+          "Hey buddy.",
+          "You want some?"
+        ],
+        "restless": 0.25
       }
     },
     "analyst": {
@@ -128,6 +196,22 @@
         ],
         "brow": "flat",
         "mouth": "smile"
+      },
+      "personality": {
+        "traitLine": "Correct, and unbearable about it.",
+        "idle": [
+          "Actually, that's not accurate.",
+          "I have a spreadsheet for this."
+        ],
+        "working": [
+          "Let me check the figures.",
+          "That reconciles."
+        ],
+        "greet": [
+          "Hello.",
+          "Mm."
+        ],
+        "restless": 0.35
       }
     },
     "wildcard": {
@@ -149,6 +233,23 @@
         "facial": "stubble",
         "brow": "flat",
         "mouth": "neutral"
+      },
+      "personality": {
+        "traitLine": "Nobody is entirely sure what he does.",
+        "idle": [
+          "I've been involved in a number of cults.",
+          "Nobody steals from Creed.",
+          "...what year is it?"
+        ],
+        "working": [
+          "Yeah, I can get that.",
+          "Leave it with me."
+        ],
+        "greet": [
+          "Do I know you?",
+          "We've met. Probably."
+        ],
+        "restless": 0.9
       }
     },
     "muscle": {
@@ -177,6 +278,23 @@
         "brow": "flat",
         "mouth": "neutral",
         "heavy": true
+      },
+      "personality": {
+        "traitLine": "Has already finished. Do not ask.",
+        "idle": [
+          "Did I stutter?",
+          "I'm doing a crossword.",
+          "Shove it up your butt."
+        ],
+        "working": [
+          "Fine.",
+          "Yeah, yeah."
+        ],
+        "greet": [
+          "Mm-hm.",
+          "..."
+        ],
+        "restless": 0.15
       }
     },
     "counsel": {
@@ -200,6 +318,23 @@
         "facial": "mustacheSm",
         "brow": "soft",
         "mouth": "frown"
+      },
+      "personality": {
+        "traitLine": "The one everyone would rather avoid.",
+        "idle": [
+          "I'm going to allow this.",
+          "There's a form for that.",
+          "Nobody talks to me."
+        ],
+        "working": [
+          "Noted. Filing it.",
+          "I'll document this."
+        ],
+        "greet": [
+          "Oh \u2014 hi.",
+          "Sorry, sorry."
+        ],
+        "restless": 0.4
       }
     },
     "liaison": {
@@ -229,7 +364,105 @@
         "mouth": "smile",
         "blush": true,
         "lashes": true
+      },
+      "personality": {
+        "traitLine": "Holds the place together, quietly.",
+        "idle": [
+          "I have a good feeling about today.",
+          "Somebody has to answer the phone.",
+          "...that's what she said."
+        ],
+        "working": [
+          "Sure, I can do that.",
+          "Almost done."
+        ],
+        "greet": [
+          "Hi!",
+          "Morning."
+        ],
+        "restless": 0.5
       }
     }
+  },
+  "layout": {
+    "wall": "#e8e0d0",
+    "wallDepth": 46.0,
+    "floor": "#c8b89a",
+    "trim": "#8a7c66",
+    "furniture": [
+      [
+        56,
+        120,
+        44,
+        14
+      ],
+      [
+        112,
+        120,
+        44,
+        14
+      ],
+      [
+        168,
+        120,
+        44,
+        14
+      ],
+      [
+        224,
+        120,
+        44,
+        14
+      ]
+    ],
+    "furnitureColor": "#a08d70",
+    "stations": [
+      {
+        "kind": "board",
+        "label": "BOARD",
+        "x": 120,
+        "y": 14,
+        "w": 76,
+        "color": "#7a6a4e"
+      },
+      {
+        "kind": "shelf",
+        "label": "SHELF",
+        "x": 10,
+        "y": 30,
+        "w": 26,
+        "color": "#6f5b40"
+      },
+      {
+        "kind": "web",
+        "label": "WEB",
+        "x": 274,
+        "y": 30,
+        "w": 36,
+        "color": "#4e6070"
+      },
+      {
+        "kind": "terminal",
+        "label": "TERM",
+        "x": 274,
+        "y": 96,
+        "w": 36,
+        "color": "#3f4650"
+      },
+      {
+        "kind": "mailbox",
+        "label": "MAIL",
+        "x": 10,
+        "y": 120,
+        "w": 26,
+        "color": "#6a6a72"
+      }
+    ],
+    "roam": [
+      50,
+      84,
+      270,
+      142
+    ]
   }
 }

@@ -1,0 +1,438 @@
+{
+  "id": "tos",
+  "name": "Star Trek: TOS",
+  "layout": {
+    "wall": "#3a3f52",
+    "wallDepth": 50.0,
+    "floor": "#8e8a80",
+    "trim": "#5a5f72",
+    "furniture": [
+      [
+        132,
+        96,
+        56,
+        16
+      ],
+      [
+        36,
+        74,
+        44,
+        12
+      ],
+      [
+        240,
+        74,
+        44,
+        12
+      ],
+      [
+        36,
+        120,
+        44,
+        12
+      ],
+      [
+        240,
+        120,
+        44,
+        12
+      ]
+    ],
+    "furnitureColor": "#6e7488",
+    "stations": [
+      {
+        "kind": "board",
+        "label": "VIEWER",
+        "x": 112,
+        "y": 10,
+        "w": 96,
+        "color": "#2a3a5a"
+      },
+      {
+        "kind": "shelf",
+        "label": "SCIENCE",
+        "x": 8,
+        "y": 30,
+        "w": 32,
+        "color": "#4a6a8a"
+      },
+      {
+        "kind": "web",
+        "label": "COMMS",
+        "x": 272,
+        "y": 30,
+        "w": 40,
+        "color": "#8a5a6a"
+      },
+      {
+        "kind": "terminal",
+        "label": "ENGINEERING",
+        "x": 268,
+        "y": 96,
+        "w": 44,
+        "color": "#8a6a3a"
+      },
+      {
+        "kind": "mailbox",
+        "label": "TRANSPORTER",
+        "x": 8,
+        "y": 116,
+        "w": 32,
+        "color": "#5a7a6a"
+      }
+    ],
+    "roam": [
+      46,
+      86,
+      262,
+      142
+    ]
+  },
+  "cast": {
+    "leader": {
+      "display": "Kirk",
+      "recipe": {
+        "skin": "light",
+        "hairc": [
+          132,
+          96,
+          52
+        ],
+        "hair": "styleShort",
+        "part": "R",
+        "cloth": "sweater",
+        "c1": [
+          212,
+          176,
+          58
+        ],
+        "brow": "flat",
+        "mouth": "smile"
+      },
+      "personality": {
+        "traitLine": "Will talk a computer to death if required.",
+        "idle": [
+          "Risk is our business.",
+          "I need engines, Scotty.",
+          "Let's see what's out there."
+        ],
+        "working": [
+          "Take us in.",
+          "Steady as she goes."
+        ],
+        "greet": [
+          "Bones.",
+          "Report."
+        ],
+        "restless": 0.7
+      }
+    },
+    "second": {
+      "display": "Spock",
+      "recipe": {
+        "skin": "light",
+        "hairc": [
+          26,
+          22,
+          24
+        ],
+        "hair": "styleShort",
+        "part": "L",
+        "cloth": "sweater",
+        "c1": [
+          46,
+          86,
+          74
+        ],
+        "brow": "angry",
+        "mouth": "neutral"
+      },
+      "personality": {
+        "traitLine": "Finds most of this illogical.",
+        "idle": [
+          "Fascinating.",
+          "That would be illogical.",
+          "Insufficient data."
+        ],
+        "working": [
+          "Working.",
+          "Computing now."
+        ],
+        "greet": [
+          "Captain.",
+          "Doctor."
+        ],
+        "restless": 0.2
+      }
+    },
+    "operator": {
+      "display": "Sulu",
+      "recipe": {
+        "skin": "tan",
+        "hairc": [
+          24,
+          20,
+          22
+        ],
+        "hair": "styleShort",
+        "part": "L",
+        "cloth": "sweater",
+        "c1": [
+          212,
+          176,
+          58
+        ],
+        "brow": "flat",
+        "mouth": "smile"
+      },
+      "personality": {
+        "traitLine": "Steady hand, sharper hobbies.",
+        "idle": [
+          "Course laid in.",
+          "Ready when you are.",
+          "Nice day for it."
+        ],
+        "working": [
+          "Helm answering.",
+          "Coming about."
+        ],
+        "greet": [
+          "Hey.",
+          "Sir."
+        ],
+        "restless": 0.5
+      }
+    },
+    "engineer": {
+      "display": "Scotty",
+      "recipe": {
+        "skin": "light",
+        "hairc": [
+          104,
+          62,
+          36
+        ],
+        "hair": "styleShort",
+        "part": "R",
+        "cloth": "sweater",
+        "c1": [
+          168,
+          58,
+          52
+        ],
+        "facial": "mustacheSm",
+        "brow": "raised",
+        "mouth": "neutral",
+        "heavy": true
+      },
+      "personality": {
+        "traitLine": "Always quotes double, delivers early.",
+        "idle": [
+          "She cannae take much more!",
+          "I'm givin' her all she's got.",
+          "Ye cannae change the laws of physics."
+        ],
+        "working": [
+          "I'll need a few minutes.",
+          "Divertin' power now."
+        ],
+        "greet": [
+          "Aye.",
+          "Laddie."
+        ],
+        "restless": 0.4
+      }
+    },
+    "analyst": {
+      "display": "McCoy",
+      "recipe": {
+        "skin": "light",
+        "hairc": [
+          96,
+          78,
+          58
+        ],
+        "hair": "styleShort",
+        "part": "L",
+        "cloth": "sweater",
+        "c1": [
+          46,
+          86,
+          74
+        ],
+        "brow": "angry",
+        "mouth": "frown"
+      },
+      "personality": {
+        "traitLine": "A doctor, not whatever you were about to ask.",
+        "idle": [
+          "I'm a doctor, not a bricklayer.",
+          "He's dead, Jim.",
+          "Good God, man."
+        ],
+        "working": [
+          "Let me have a look.",
+          "Hold still."
+        ],
+        "greet": [
+          "Jim.",
+          "Spock."
+        ],
+        "restless": 0.45
+      }
+    },
+    "wildcard": {
+      "display": "Chekov",
+      "recipe": {
+        "skin": "light",
+        "hairc": [
+          62,
+          42,
+          28
+        ],
+        "hair": "styleFloppy",
+        "cloth": "sweater",
+        "c1": [
+          212,
+          176,
+          58
+        ],
+        "brow": "raised",
+        "mouth": "smile"
+      },
+      "personality": {
+        "traitLine": "Everything was invented in Russia.",
+        "idle": [
+          "This was inwented in Russia.",
+          "Keptin!",
+          "Is Russian inwention."
+        ],
+        "working": [
+          "Aye, Keptin.",
+          "Plotting now."
+        ],
+        "greet": [
+          "Keptin!",
+          "Hello!"
+        ],
+        "restless": 0.8
+      }
+    },
+    "muscle": {
+      "display": "Chapel",
+      "recipe": {
+        "skin": "light",
+        "hairc": [
+          196,
+          168,
+          104
+        ],
+        "hair": "styleBun",
+        "cloth": "blouse",
+        "c1": [
+          228,
+          224,
+          216
+        ],
+        "brow": "soft",
+        "mouth": "neutral",
+        "lashes": true
+      },
+      "personality": {
+        "traitLine": "Runs sickbay while everyone argues.",
+        "idle": [
+          "Vitals are stable.",
+          "Doctor's with a patient.",
+          "Someone has to chart this."
+        ],
+        "working": [
+          "Preparing a hypo.",
+          "On my way."
+        ],
+        "greet": [
+          "Doctor.",
+          "Nurse."
+        ],
+        "restless": 0.35
+      }
+    },
+    "counsel": {
+      "display": "Uhura",
+      "recipe": {
+        "skin": "brown",
+        "hairc": [
+          28,
+          22,
+          20
+        ],
+        "hair": "styleBun",
+        "cloth": "sweater",
+        "c1": [
+          168,
+          58,
+          52
+        ],
+        "brow": "soft",
+        "mouth": "smile",
+        "lashes": true
+      },
+      "personality": {
+        "traitLine": "Hears everything, on every frequency.",
+        "idle": [
+          "Hailing frequencies open.",
+          "All frequencies quiet.",
+          "I'm picking something up."
+        ],
+        "working": [
+          "Channel open, sir.",
+          "Relaying now."
+        ],
+        "greet": [
+          "Captain.",
+          "Hello."
+        ],
+        "restless": 0.4
+      }
+    },
+    "liaison": {
+      "display": "Rand",
+      "recipe": {
+        "skin": "light",
+        "hairc": [
+          214,
+          190,
+          120
+        ],
+        "hair": "styleFrame",
+        "length": 16,
+        "vol": 2,
+        "cloth": "blouse",
+        "c1": [
+          212,
+          176,
+          58
+        ],
+        "brow": "soft",
+        "mouth": "smile",
+        "lashes": true
+      },
+      "personality": {
+        "traitLine": "Keeps the captain's day from collapsing.",
+        "idle": [
+          "Your reports, sir.",
+          "Coffee's on the way.",
+          "Sign here, please."
+        ],
+        "working": [
+          "Right away.",
+          "I'll see to it."
+        ],
+        "greet": [
+          "Sir.",
+          "Morning."
+        ],
+        "restless": 0.5
+      }
+    }
+  }
+}

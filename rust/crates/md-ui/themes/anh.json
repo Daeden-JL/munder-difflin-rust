@@ -1,0 +1,456 @@
+{
+  "id": "anh",
+  "name": "Star Wars: A New Hope",
+  "layout": {
+    "wall": "#7d7264",
+    "wallDepth": 44.0,
+    "floor": "#b9a887",
+    "trim": "#6a5f4e",
+    "furniture": [
+      [
+        44,
+        110,
+        40,
+        14
+      ],
+      [
+        100,
+        110,
+        40,
+        14
+      ],
+      [
+        156,
+        110,
+        40,
+        14
+      ],
+      [
+        212,
+        110,
+        40,
+        14
+      ],
+      [
+        44,
+        136,
+        208,
+        8
+      ]
+    ],
+    "furnitureColor": "#8f8068",
+    "stations": [
+      {
+        "kind": "board",
+        "label": "BRIEFING",
+        "x": 116,
+        "y": 10,
+        "w": 88,
+        "color": "#4a5a6a"
+      },
+      {
+        "kind": "shelf",
+        "label": "ARMORY",
+        "x": 8,
+        "y": 28,
+        "w": 32,
+        "color": "#6a5a4a"
+      },
+      {
+        "kind": "web",
+        "label": "HOLONET",
+        "x": 274,
+        "y": 28,
+        "w": 38,
+        "color": "#4a6a7a"
+      },
+      {
+        "kind": "terminal",
+        "label": "HANGAR",
+        "x": 270,
+        "y": 94,
+        "w": 42,
+        "color": "#5a5a62"
+      },
+      {
+        "kind": "mailbox",
+        "label": "CANTINA",
+        "x": 8,
+        "y": 114,
+        "w": 32,
+        "color": "#7a5a3a"
+      }
+    ],
+    "roam": [
+      48,
+      84,
+      264,
+      138
+    ]
+  },
+  "cast": {
+    "leader": {
+      "display": "Leia",
+      "recipe": {
+        "skin": "light",
+        "hairc": [
+          58,
+          40,
+          28
+        ],
+        "hair": "styleBun",
+        "cloth": "blouse",
+        "c1": [
+          236,
+          232,
+          226
+        ],
+        "brow": "angry",
+        "mouth": "neutral",
+        "lashes": true
+      },
+      "personality": {
+        "traitLine": "In charge, whatever the manifest says.",
+        "idle": [
+          "Someone has to save our skins.",
+          "This is our most desperate hour.",
+          "Into the garbage chute."
+        ],
+        "working": [
+          "I'm taking command.",
+          "Move it."
+        ],
+        "greet": [
+          "Governor.",
+          "You came back."
+        ],
+        "restless": 0.55
+      }
+    },
+    "second": {
+      "display": "Han",
+      "recipe": {
+        "skin": "light",
+        "hairc": [
+          70,
+          48,
+          32
+        ],
+        "hair": "styleShort",
+        "part": "R",
+        "cloth": "dressshirt",
+        "c1": [
+          226,
+          222,
+          214
+        ],
+        "brow": "raised",
+        "mouth": "smile"
+      },
+      "personality": {
+        "traitLine": "In it for the money. Allegedly.",
+        "idle": [
+          "I know.",
+          "Never tell me the odds.",
+          "She's got it where it counts."
+        ],
+        "working": [
+          "Fine, I'll do it.",
+          "Punch it."
+        ],
+        "greet": [
+          "Hey, kid.",
+          "Chewie."
+        ],
+        "restless": 0.7
+      }
+    },
+    "operator": {
+      "display": "Luke",
+      "recipe": {
+        "skin": "light",
+        "hairc": [
+          196,
+          166,
+          102
+        ],
+        "hair": "styleFloppy",
+        "cloth": "sweater",
+        "c1": [
+          232,
+          228,
+          220
+        ],
+        "brow": "raised",
+        "mouth": "smile"
+      },
+      "personality": {
+        "traitLine": "Was going to Tosche Station for power converters.",
+        "idle": [
+          "I was going into Tosche Station.",
+          "But I was gonna\u2014",
+          "I can take them."
+        ],
+        "working": [
+          "I'm going in.",
+          "I've got a bad feeling about this."
+        ],
+        "greet": [
+          "Ben!",
+          "Hey!"
+        ],
+        "restless": 0.8
+      }
+    },
+    "engineer": {
+      "display": "Chewbacca",
+      "recipe": {
+        "skin": "brown",
+        "hairc": [
+          92,
+          62,
+          38
+        ],
+        "hair": "styleMessy",
+        "length": 16,
+        "cloth": "sweater",
+        "c1": [
+          112,
+          78,
+          50
+        ],
+        "facial": "stubble",
+        "brow": "flat",
+        "mouth": "neutral",
+        "heavy": true
+      },
+      "personality": {
+        "traitLine": "Fixes it. Complains in advance.",
+        "idle": [
+          "Rrrwww.",
+          "Aaaarrrgh.",
+          "Wrrraaawww."
+        ],
+        "working": [
+          "Grrrwaaah.",
+          "Rrrgh!"
+        ],
+        "greet": [
+          "Rawrr!",
+          "Wrrf."
+        ],
+        "restless": 0.5
+      }
+    },
+    "analyst": {
+      "display": "C-3PO",
+      "recipe": {
+        "skin": "tan",
+        "hairc": [
+          196,
+          164,
+          72
+        ],
+        "hair": "styleBald",
+        "cloth": "sweater",
+        "c1": [
+          206,
+          172,
+          72
+        ],
+        "brow": "raised",
+        "mouth": "neutral"
+      },
+      "personality": {
+        "traitLine": "Fluent in six million forms of anxiety.",
+        "idle": [
+          "We're doomed.",
+          "The odds of survival are\u2014",
+          "I do believe they think I'm some sort of god."
+        ],
+        "working": [
+          "Oh! Right away, sir.",
+          "I shall try, sir."
+        ],
+        "greet": [
+          "Oh! Hello!",
+          "Master Luke!"
+        ],
+        "restless": 0.45
+      }
+    },
+    "wildcard": {
+      "display": "R2-D2",
+      "recipe": {
+        "skin": "light",
+        "hairc": [
+          70,
+          110,
+          150
+        ],
+        "hair": "styleBald",
+        "cloth": "polo",
+        "c1": [
+          196,
+          198,
+          204
+        ],
+        "c2": [
+          70,
+          110,
+          150
+        ],
+        "brow": "flat",
+        "mouth": "neutral"
+      },
+      "personality": {
+        "traitLine": "Has the plans. Is not telling you.",
+        "idle": [
+          "Beep-boop.",
+          "Whee-oo.",
+          "Bee-doo-weep."
+        ],
+        "working": [
+          "Whirrr.",
+          "Bee-doo!"
+        ],
+        "greet": [
+          "Weep-woo!",
+          "Bwoop."
+        ],
+        "restless": 0.9
+      }
+    },
+    "muscle": {
+      "display": "Vader",
+      "recipe": {
+        "skin": "dark",
+        "hairc": [
+          18,
+          16,
+          18
+        ],
+        "hair": "styleBald",
+        "cloth": "suit",
+        "c1": [
+          30,
+          28,
+          34
+        ],
+        "tie": [
+          24,
+          22,
+          28
+        ],
+        "brow": "angry",
+        "mouth": "frown",
+        "heavy": true
+      },
+      "personality": {
+        "traitLine": "Finds your lack of faith disturbing.",
+        "idle": [
+          "I find your lack of faith disturbing.",
+          "The Force is strong with this one.",
+          "You are unwise."
+        ],
+        "working": [
+          "It is done.",
+          "As you wish."
+        ],
+        "greet": [
+          "We meet again.",
+          "..."
+        ],
+        "restless": 0.2
+      }
+    },
+    "counsel": {
+      "display": "Obi-Wan",
+      "recipe": {
+        "skin": "light",
+        "hairc": [
+          186,
+          182,
+          176
+        ],
+        "hair": "styleShort",
+        "part": "L",
+        "cloth": "cardigan",
+        "c1": [
+          176,
+          152,
+          116
+        ],
+        "c2": [
+          140,
+          118,
+          88
+        ],
+        "facial": "goatee",
+        "brow": "soft",
+        "mouth": "smile"
+      },
+      "personality": {
+        "traitLine": "Certain points of view, all of them his.",
+        "idle": [
+          "That's no moon.",
+          "The Force will be with you.",
+          "These aren't the droids you're looking for."
+        ],
+        "working": [
+          "Trust your feelings.",
+          "Let go, Luke."
+        ],
+        "greet": [
+          "Hello there.",
+          "Old friend."
+        ],
+        "restless": 0.35
+      }
+    },
+    "liaison": {
+      "display": "Lando",
+      "recipe": {
+        "skin": "brown",
+        "hairc": [
+          30,
+          24,
+          20
+        ],
+        "hair": "styleShort",
+        "part": "R",
+        "cloth": "cardigan",
+        "c1": [
+          74,
+          58,
+          86
+        ],
+        "c2": [
+          196,
+          170,
+          110
+        ],
+        "facial": "mustacheSm",
+        "brow": "raised",
+        "mouth": "smile"
+      },
+      "personality": {
+        "traitLine": "Has a deal for you. It is a good deal.",
+        "idle": [
+          "You look absolutely beautiful.",
+          "It's not my fault.",
+          "I've got a deal."
+        ],
+        "working": [
+          "Leave it to me.",
+          "I'll make the arrangements."
+        ],
+        "greet": [
+          "Hello, what have we here?",
+          "Old buddy!"
+        ],
+        "restless": 0.6
+      }
+    }
+  }
+}

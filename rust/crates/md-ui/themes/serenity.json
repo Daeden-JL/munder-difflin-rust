@@ -7,73 +7,446 @@
     "leader": {
       "display": "Mal",
       "recipe": {
-        "skin": "light", "hairc": [56, 40, 26], "hair": "styleShort", "part": "R",
-        "cloth": "dressshirt", "c1": [122, 90, 60], "brow": "flat", "mouth": "neutral"
+        "skin": "light",
+        "hairc": [
+          56,
+          40,
+          26
+        ],
+        "hair": "styleShort",
+        "part": "R",
+        "cloth": "dressshirt",
+        "c1": [
+          122,
+          90,
+          60
+        ],
+        "brow": "flat",
+        "mouth": "neutral"
+      },
+      "personality": {
+        "traitLine": "Captain. Aims to misbehave.",
+        "idle": [
+          "We're still flyin'.",
+          "That's good enough.",
+          "Ain't we just."
+        ],
+        "working": [
+          "Let's get to it.",
+          "We do the job, we get paid."
+        ],
+        "greet": [
+          "Cap'n.",
+          "We're all right."
+        ],
+        "restless": 0.6
       }
     },
     "second": {
       "display": "Zoe",
       "recipe": {
-        "skin": "brown", "hairc": [30, 24, 20], "hair": "styleCurly",
-        "cloth": "sweater", "c1": [96, 82, 64], "brow": "flat", "mouth": "neutral",
+        "skin": "brown",
+        "hairc": [
+          30,
+          24,
+          20
+        ],
+        "hair": "styleCurly",
+        "cloth": "sweater",
+        "c1": [
+          96,
+          82,
+          64
+        ],
+        "brow": "flat",
+        "mouth": "neutral",
         "lashes": true
+      },
+      "personality": {
+        "traitLine": "Says the quiet part only once.",
+        "idle": [
+          "Sir.",
+          "Everything's shiny.",
+          "I'll stand watch."
+        ],
+        "working": [
+          "Understood.",
+          "Consider it done."
+        ],
+        "greet": [
+          "Sir.",
+          "All quiet."
+        ],
+        "restless": 0.3
       }
     },
     "operator": {
       "display": "Wash",
       "recipe": {
-        "skin": "light", "hairc": [186, 154, 90], "hair": "styleFloppy",
-        "cloth": "polo", "c1": [214, 158, 74], "c2": [120, 160, 130],
-        "brow": "raised", "mouth": "grin"
+        "skin": "light",
+        "hairc": [
+          186,
+          154,
+          90
+        ],
+        "hair": "styleFloppy",
+        "cloth": "polo",
+        "c1": [
+          214,
+          158,
+          74
+        ],
+        "c2": [
+          120,
+          160,
+          130
+        ],
+        "brow": "raised",
+        "mouth": "grin"
+      },
+      "personality": {
+        "traitLine": "Flies it. Also has dinosaurs.",
+        "idle": [
+          "I am a leaf on the wind.",
+          "Little toy dinosaurs.",
+          "Everything looks good from here."
+        ],
+        "working": [
+          "Taking us out.",
+          "Smooth as she goes."
+        ],
+        "greet": [
+          "Hey there.",
+          "Look at you."
+        ],
+        "restless": 0.75
       }
     },
     "engineer": {
       "display": "Kaylee",
       "recipe": {
-        "skin": "light", "hairc": [120, 76, 42], "hair": "styleFrame", "length": 18, "vol": 2,
-        "cloth": "cardigan", "c1": [232, 168, 176], "c2": [244, 240, 232],
-        "brow": "soft", "mouth": "smile", "blush": true, "lashes": true
+        "skin": "light",
+        "hairc": [
+          120,
+          76,
+          42
+        ],
+        "hair": "styleFrame",
+        "length": 18,
+        "vol": 2,
+        "cloth": "cardigan",
+        "c1": [
+          232,
+          168,
+          176
+        ],
+        "c2": [
+          244,
+          240,
+          232
+        ],
+        "brow": "soft",
+        "mouth": "smile",
+        "blush": true,
+        "lashes": true
+      },
+      "personality": {
+        "traitLine": "Loves the engine more than most people.",
+        "idle": [
+          "She's purring.",
+          "Just needs a bit of coaxing.",
+          "Oh, that's a lovely sound."
+        ],
+        "working": [
+          "I'll get her running.",
+          "Give me a minute with her."
+        ],
+        "greet": [
+          "Hi!",
+          "How're you?"
+        ],
+        "restless": 0.7
       }
     },
     "analyst": {
       "display": "Simon",
       "recipe": {
-        "skin": "light", "hairc": [40, 30, 22], "hair": "styleShort", "part": "L",
-        "cloth": "suit", "c1": [78, 88, 102], "tie": [110, 130, 150],
-        "brow": "flat", "mouth": "neutral"
+        "skin": "light",
+        "hairc": [
+          40,
+          30,
+          22
+        ],
+        "hair": "styleShort",
+        "part": "L",
+        "cloth": "suit",
+        "c1": [
+          78,
+          88,
+          102
+        ],
+        "tie": [
+          110,
+          130,
+          150
+        ],
+        "brow": "flat",
+        "mouth": "neutral"
+      },
+      "personality": {
+        "traitLine": "Precise, out of his depth, doing fine.",
+        "idle": [
+          "This is a terrible idea.",
+          "I should sterilise that.",
+          "I did the calculations twice."
+        ],
+        "working": [
+          "Carefully, then.",
+          "Let me check that again."
+        ],
+        "greet": [
+          "Hello.",
+          "...right."
+        ],
+        "restless": 0.35
       }
     },
     "wildcard": {
       "display": "River",
       "recipe": {
-        "skin": "light", "hairc": [58, 40, 30], "hair": "styleMessy", "length": 14,
-        "cloth": "blouse", "c1": [206, 200, 190], "brow": "soft", "mouth": "neutral",
+        "skin": "light",
+        "hairc": [
+          58,
+          40,
+          30
+        ],
+        "hair": "styleMessy",
+        "length": 14,
+        "cloth": "blouse",
+        "c1": [
+          206,
+          200,
+          190
+        ],
+        "brow": "soft",
+        "mouth": "neutral",
         "lashes": true
+      },
+      "personality": {
+        "traitLine": "Knows things she should not.",
+        "idle": [
+          "Two by two, hands of blue.",
+          "The trees are speaking.",
+          "I can see the whole of it."
+        ],
+        "working": [
+          "It's already done.",
+          "I know where it is."
+        ],
+        "greet": [
+          "You're afraid of me.",
+          "Hello."
+        ],
+        "restless": 0.95
       }
     },
     "muscle": {
       "display": "Jayne",
       "recipe": {
-        "skin": "light", "hairc": [72, 54, 34], "hair": "styleSpiky",
-        "cloth": "sweater", "c1": [150, 136, 92], "facial": "stubble",
-        "brow": "angry", "mouth": "frown", "heavy": true
+        "skin": "light",
+        "hairc": [
+          72,
+          54,
+          34
+        ],
+        "hair": "styleSpiky",
+        "cloth": "sweater",
+        "c1": [
+          150,
+          136,
+          92
+        ],
+        "facial": "stubble",
+        "brow": "angry",
+        "mouth": "frown",
+        "heavy": true
+      },
+      "personality": {
+        "traitLine": "Has a favourite gun. It has a name.",
+        "idle": [
+          "Vera's clean.",
+          "I'll be in my bunk.",
+          "Somebody's gotta do it."
+        ],
+        "working": [
+          "Point me at it.",
+          "Fine, I'm going."
+        ],
+        "greet": [
+          "Hey.",
+          "Mm."
+        ],
+        "restless": 0.2
       }
     },
     "counsel": {
       "display": "Book",
       "recipe": {
-        "skin": "brown", "hairc": [190, 186, 182], "hair": "styleBun",
-        "cloth": "sweater", "c1": [70, 66, 74], "facial": "goatee",
-        "brow": "soft", "mouth": "smile"
+        "skin": "brown",
+        "hairc": [
+          190,
+          186,
+          182
+        ],
+        "hair": "styleBun",
+        "cloth": "sweater",
+        "c1": [
+          70,
+          66,
+          74
+        ],
+        "facial": "goatee",
+        "brow": "soft",
+        "mouth": "smile"
+      },
+      "personality": {
+        "traitLine": "A shepherd, with a past.",
+        "idle": [
+          "A man walks down the street...",
+          "I've been out of the world a while.",
+          "Patience."
+        ],
+        "working": [
+          "I'll see to it.",
+          "Gently, now."
+        ],
+        "greet": [
+          "Peace be with you.",
+          "Son."
+        ],
+        "restless": 0.4
       }
     },
     "liaison": {
       "display": "Inara",
       "recipe": {
-        "skin": "tan", "hairc": [56, 34, 26], "hair": "styleFrame", "length": 19, "vol": 2,
-        "cloth": "blouse", "c1": [156, 72, 96], "brow": "soft", "mouth": "smile",
+        "skin": "tan",
+        "hairc": [
+          56,
+          34,
+          26
+        ],
+        "hair": "styleFrame",
+        "length": 19,
+        "vol": 2,
+        "cloth": "blouse",
+        "c1": [
+          156,
+          72,
+          96
+        ],
+        "brow": "soft",
+        "mouth": "smile",
         "lashes": true
+      },
+      "personality": {
+        "traitLine": "Composed, and better connected than anyone.",
+        "idle": [
+          "I have a client at Persephone.",
+          "Manners cost nothing.",
+          "Tea?"
+        ],
+        "working": [
+          "I'll make the arrangements.",
+          "Leave it with me."
+        ],
+        "greet": [
+          "Good day.",
+          "How lovely."
+        ],
+        "restless": 0.45
       }
     }
+  },
+  "layout": {
+    "wall": "#2f3a44",
+    "wallDepth": 42.0,
+    "floor": "#6b5f4c",
+    "trim": "#4a4034",
+    "furniture": [
+      [
+        40,
+        104,
+        52,
+        12
+      ],
+      [
+        112,
+        104,
+        52,
+        12
+      ],
+      [
+        184,
+        104,
+        52,
+        12
+      ],
+      [
+        40,
+        132,
+        196,
+        8
+      ]
+    ],
+    "furnitureColor": "#7d6f58",
+    "stations": [
+      {
+        "kind": "board",
+        "label": "NAV",
+        "x": 122,
+        "y": 12,
+        "w": 70,
+        "color": "#3d5566"
+      },
+      {
+        "kind": "shelf",
+        "label": "CARGO",
+        "x": 8,
+        "y": 26,
+        "w": 30,
+        "color": "#5a4a34"
+      },
+      {
+        "kind": "web",
+        "label": "COMMS",
+        "x": 276,
+        "y": 26,
+        "w": 36,
+        "color": "#3f5a5a"
+      },
+      {
+        "kind": "terminal",
+        "label": "ENGINE",
+        "x": 276,
+        "y": 92,
+        "w": 36,
+        "color": "#6a4a3a"
+      },
+      {
+        "kind": "mailbox",
+        "label": "GALLEY",
+        "x": 8,
+        "y": 116,
+        "w": 30,
+        "color": "#4a4a52"
+      }
+    ],
+    "roam": [
+      48,
+      84,
+      268,
+      140
+    ]
   }
 }

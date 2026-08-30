@@ -65,6 +65,14 @@ fn App() -> impl IntoView {
     // product; files are a tool alongside them.
     let pane = RwSignal::new("chat".to_string());
     let root = RwSignal::new("~".to_string());
+    // Derived ONCE and shared: the roster and the floor must not compute this
+    // separately, or a face beside a name stops being the figure on the floor.
+    let archetypes = Signal::derive(move || {
+        let list = agents.get();
+        let ids: Vec<String> = list.iter().map(|a| a.id.clone()).collect();
+        let god = list.iter().find(|a| a.is_god).map(|a| a.id.clone());
+        theme::assign(&ids, god.as_deref())
+    });
 
     // A successful authenticated call is the session probe: a cookie from an
     // earlier visit is still good, so a reload does not sign you out.
@@ -178,15 +186,24 @@ fn App() -> impl IntoView {
                     }>"closing time"</button>
                 </header>
                 <div class="body">
-                    <Roster agents selected theme/>
+                    <Roster agents selected theme slots=archetypes/>
                     <div class="main">
-                        <Floor occupants=Signal::derive(move || occupants(agents.get()))
-                               theme selected activity=tool_activity/>
+                        <Floor occupants=Signal::derive(move || occupants(agents.get(), &archetypes.get()))
+                               theme selected activity=tool_activity archetypes/>
                         <Show
                             when=move || pane.get() == "chat"
                             fallback=move || view! { <Editor root/> }
                         >
-                            <Conversation agent=selected activity/>
+                            <Conversation agent=selected activity persona=Signal::derive(move || {
+                                let id = selected.get()?;
+                                let themes = theme::builtin();
+                                let t = themes.get(theme.get() % themes.len().max(1))?;
+                                let arch = archetypes.get().get(&id)?.clone();
+                                Some((
+                                    floor::character_name(t, &arch)?,
+                                    floor::character_trait(t, &arch).unwrap_or_default(),
+                                ))
+                            })/>
                         </Show>
                     </div>
                 </div>
@@ -200,10 +217,8 @@ fn App() -> impl IntoView {
 /// Archetypes are assigned over the roster in a STABLE order — id, not display
 /// name — so renaming an agent does not reshuffle the floor, and neither does a
 /// re-sort of the sidebar.
-fn occupants(mut agents: Vec<Agent>) -> Vec<Occupant> {
+fn occupants(mut agents: Vec<Agent>, slots: &std::collections::HashMap<String, String>) -> Vec<Occupant> {
     agents.sort_by(|a, b| a.id.cmp(&b.id));
-    let ids: Vec<String> = agents.iter().map(|a| a.id.clone()).collect();
-    let slots = theme::assign(&ids);
     agents
         .into_iter()
         .filter(|a| !a.archived)
@@ -254,15 +269,11 @@ fn Roster(
     agents: RwSignal<Vec<Agent>>,
     selected: RwSignal<Option<String>>,
     theme: RwSignal<usize>,
+    /// The shared assignment, so the face beside a name is the figure on the
+    /// floor rather than a different member of the cast.
+    slots: Signal<std::collections::HashMap<String, String>>,
 ) -> impl IntoView {
-    // Archetypes are assigned the same way the floor assigns them, from the
-    // same stable id order — so the face beside a name is the figure on the
-    // floor, not a different member of the cast.
-    let slots = Signal::derive(move || {
-        let mut ids: Vec<String> = agents.get().into_iter().map(|a| a.id).collect();
-        ids.sort();
-        theme::assign(&ids)
-    });
+
     view! {
         <aside class="roster">
             <Show when=move || agents.get().is_empty()>
@@ -290,24 +301,26 @@ fn Roster(
                             <span class="pip" class:live=a.live class:hold=a.on_hold></span>
                             <img class="face" src=move || face().unwrap_or_default() alt=""/>
                             <span class="who">
-                                <b>{a.name.clone()}</b>
+                                <b>{
+                                    let id = a.id.clone();
+                                    let own = a.name.clone();
+                                    move || {
+                                        let themes = theme::builtin();
+                                        themes.get(theme.get() % themes.len().max(1))
+                                            .and_then(|t| slots.get().get(&id).and_then(|arch| floor::character_name(t, arch)))
+                                            .unwrap_or_else(|| own.clone())
+                                    }
+                                }</b>
                                 // Role, and who they are DRESSED as. Without the
                                 // second half a theme switch changes the art and
                                 // nothing says why.
+                                // The agent's OWN name underneath, so the
+                                // mapping is never a mystery — you can see that
+                                // Mal is michael without switching themes back.
                                 <i>{
-                                    let id = a.id.clone();
+                                    let own = a.name.clone();
                                     let role = if a.is_god { "orchestrator".to_string() } else { a.role.clone() };
-                                    move || {
-                                        let themes = theme::builtin();
-                                        let dressed = themes
-                                            .get(theme.get() % themes.len().max(1))
-                                            .and_then(|t| slots.get().get(&id).and_then(|arch| floor::character_name(t, arch)));
-                                        match dressed {
-                                            Some(d) if !role.is_empty() => format!("{role} · {d}"),
-                                            Some(d) => d,
-                                            None => role.clone(),
-                                        }
-                                    }
+                                    if role.is_empty() { own } else { format!("{own} · {role}") }
                                 }</i>
                             </span>
                             <Show when=move || a.archived>
