@@ -135,6 +135,187 @@ pub async fn run(op: Op, ctx: Ctx) -> RpcResponse {
 
         Op::AppStartClosingTime => closing_start(&ctx),
         Op::AppCancelClosingTime => closing_cancel(&ctx),
+
+        Op::HiveTextSearch => {
+            let q: String = tri!(ctx.arg(0));
+            RpcResponse::ok(hive::Hive::new(ctx.paths.hive_root()).text_search(&q))
+        }
+
+        Op::HistoryAdd => {
+            let e: Value = tri!(ctx.arg(0));
+            let (Some(agent), Some(text)) = (
+                e.get("agentId").and_then(|v| v.as_str()),
+                e.get("text").and_then(|v| v.as_str()),
+            ) else {
+                return RpcResponse::ok(json!({ "ok": false, "error": "invalid args" }));
+            };
+            RpcResponse::ok(history(&ctx).add(agent, e.get("cwd").and_then(|v| v.as_str()), text))
+        }
+        Op::HistoryList => RpcResponse::ok(history(&ctx).list(
+            ctx.opt_arg::<String>(0).as_deref().filter(|s| !s.is_empty()),
+            ctx.opt_arg::<usize>(1).unwrap_or(200).min(1_000),
+        )),
+        Op::HistorySearch => RpcResponse::ok(history(&ctx).search(
+            &tri!(ctx.arg::<String>(0)),
+            ctx.opt_arg::<usize>(1).unwrap_or(50).min(1_000),
+        )),
+
+        Op::SessionResolveCwd => session_resolve_cwd(&ctx),
+        Op::PtyRedraw => pty_redraw(&ctx),
+        Op::FsReadBinary => fs_read_binary(&ctx),
+        Op::ConfigEnsureHome => {
+            // The tenant's harness home is provisioned at boot and is not the
+            // client's to move, so this only confirms it exists.
+            match std::fs::create_dir_all(ctx.paths.harness_home()) {
+                Ok(()) => RpcResponse::ok(json!({ "ok": true })),
+                Err(e) => RpcResponse::ok(json!({ "ok": false, "error": e.to_string() })),
+            }
+        }
+        Op::ConfigSetAgentTokenCap => config_set_token_cap(&ctx),
+        // Counted, not stored. The Electron original feeds a telemetry pipeline
+        // that has no equivalent here; the channel exists so the client's
+        // fire-and-forget call is not an error.
+        Op::AnalyticsMessageSent => {
+            tracing::debug!(surface = ?ctx.opt_arg::<String>(0), tenant = %ctx.tenant, "message sent");
+            RpcResponse::ok(Value::Null)
+        }
+    }
+}
+
+fn history(ctx: &Ctx) -> crate::history::History {
+    crate::history::History::new(&ctx.paths.harness_home())
+}
+
+/// Which working directory a recorded session belongs to.
+///
+/// Transcripts are filed under a directory named for the cwd that produced
+/// them, so the answer is found by looking for the session's file rather than
+/// by storing a mapping that could drift.
+fn session_resolve_cwd(ctx: &Ctx) -> RpcResponse {
+    let session: String = tri!(ctx.arg(0));
+    if session.is_empty()
+        || !session.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return RpcResponse::ok(Value::Null);
+    }
+    // The registry is authoritative and cheap, so try it before walking a
+    // directory tree.
+    let reg = hive::Hive::new(ctx.paths.hive_root()).registry();
+    if let Some(agents) = reg["agents"].as_object() {
+        for a in agents.values() {
+            if a["sessionId"].as_str() == Some(session.as_str()) {
+                if let Some(cwd) = a["cwd"].as_str() {
+                    return RpcResponse::ok(json!(cwd));
+                }
+            }
+        }
+    }
+    // Otherwise find the transcript and read the cwd the CLI recorded in it.
+    let projects = ctx.paths.home().join(".claude/projects");
+    let Ok(dirs) = std::fs::read_dir(&projects) else { return RpcResponse::ok(Value::Null) };
+    for d in dirs.filter_map(Result::ok) {
+        let file = d.path().join(format!("{session}.jsonl"));
+        if !file.is_file() {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(&file) {
+            for line in text.lines().take(50) {
+                if let Ok(rec) = serde_json::from_str::<Value>(line) {
+                    if let Some(cwd) = rec.get("cwd").and_then(|v| v.as_str()) {
+                        return RpcResponse::ok(json!(cwd));
+                    }
+                }
+            }
+        }
+    }
+    RpcResponse::ok(Value::Null)
+}
+
+/// Nudge a TUI into repainting, by resizing a column narrower and back.
+///
+/// There is no portable "redraw" signal; a size change is what every terminal
+/// program already listens for. Kept because an agent CLI that was resized
+/// while hidden can otherwise sit with a corrupted frame.
+fn pty_redraw(ctx: &Ctx) -> RpcResponse {
+    let id: String = tri!(ctx.arg(0));
+    let Some(info) = ctx.state.pty.list(&ctx.tenant).into_iter().find(|s| s.id == id) else {
+        return RpcResponse::ok(json!({ "ok": false, "error": "no such session" }));
+    };
+    // Resize narrower and back. Programs redraw on SIGWINCH, and the round trip
+    // leaves the terminal exactly as it was.
+    let (cols, rows) = (info.cols.max(2), info.rows);
+    if let Err(e) = ctx.state.pty.resize(&id, &ctx.tenant, cols - 1, rows) {
+        return RpcResponse::ok(json!({ "ok": false, "error": e.to_string() }));
+    }
+    match ctx.state.pty.resize(&id, &ctx.tenant, cols, rows) {
+        Ok(()) => RpcResponse::ok(json!({ "ok": true })),
+        Err(e) => RpcResponse::ok(json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+/// Read a file as bytes, base64-encoded.
+///
+/// Separate from `fs:readFile` because the caller wants an image or an archive,
+/// where a lossy UTF-8 conversion would silently corrupt the content.
+fn fs_read_binary(ctx: &Ctx) -> RpcResponse {
+    let root: String = tri!(ctx.arg(0));
+    let rel: String = tri!(ctx.arg(1));
+    let base = tri!(ctx.resolve(&root));
+    let full = tri!(ctx.resolve(&base.join(&rel).display().to_string()));
+    if !full.starts_with(&base) {
+        return RpcResponse::err(ErrorCode::Forbidden, "path escapes the given root");
+    }
+    match std::fs::read(&full) {
+        Ok(bytes) => RpcResponse::ok(json!(base64(&bytes))),
+        Err(e) => RpcResponse::err(ErrorCode::Internal, e.to_string()),
+    }
+}
+
+/// Minimal base64. A dependency for one call site that runs rarely would be
+/// more code to audit than the twenty lines it replaces.
+fn base64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+/// Per-agent token budget, stored on the tenant's config.
+fn config_set_token_cap(ctx: &Ctx) -> RpcResponse {
+    let agent: String = tri!(ctx.arg(0));
+    let cap: i64 = tri!(ctx.arg(1));
+    let path = ctx.paths.config_file();
+    let mut cfg: Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| json!({}));
+    if !cfg.is_object() {
+        cfg = json!({});
+    }
+    let caps = cfg
+        .as_object_mut()
+        .unwrap()
+        .entry("agentTokenCaps")
+        .or_insert_with(|| json!({}));
+    if let Some(m) = caps.as_object_mut() {
+        // A non-positive cap clears it rather than pinning the agent at zero,
+        // which would look like a budget of nothing rather than no budget.
+        if cap > 0 {
+            m.insert(agent, json!(cap));
+        } else {
+            m.remove(&agent);
+        }
+    }
+    match std::fs::write(&path, serde_json::to_vec_pretty(&cfg).unwrap_or_default()) {
+        Ok(()) => RpcResponse::ok(cfg),
+        Err(e) => RpcResponse::err(ErrorCode::Internal, e.to_string()),
     }
 }
 

@@ -1,6 +1,6 @@
 # Port checklist
 
-**Status: 49 of 161 RPC channels ported, 19 deliberately never ported, 93 to go.
+**Status: 59 of 161 RPC channels ported, 19 deliberately never ported, 83 to go.
 10 of 28 push channels served.** Regenerate this count any time:
 
 ```sh
@@ -61,23 +61,32 @@ of it, so the remaining work is wide rather than deep.
 
 ## Phase C — backend port (the bulk of the work)
 
-### ☐ C1. Finish the terminal plane — `pty.ts` 806 + 272 LOC of helpers
-The core spawn/stream/kill path works. What is missing is everything that makes
-an agent CLI actually start on a real machine.
-
-1. Port `shellEnv.ts` (128) — capture PATH from a login shell. Without it, agents
-   started by the server see a stub PATH and die with 127.
-2. Port `ptyEnv.ts` (90) — environment construction for the child.
-3. Port `procKill.ts` (54) — process-**tree** kill. Killing the pty leader alone
-   leaves MCP servers and helper processes orphaned.
-4. Port `withHiveRuntimeFallback` — appends the bundled-node dir to PATH.
-   Append, never prepend: prepending swaps the node version under the user's own
-   projects, which the TS comments call out as a deliberate product decision.
-5. Port session resume + `session:resolveCwd`, and the relaunch-after-install
-   path that re-arms a terminal in place (`pty:relaunch`).
-
-**Done when:** a real `claude` process starts in the container, survives a
-resize, and a tree-kill leaves no orphans (`ps` clean).
+### ☑ C1. Terminal plane — done
+1. **PATH** (`shellEnv.ts`). A server started by systemd, launchd or Docker has
+   a minimal PATH that usually lacks whatever installed the agent CLI, so a bare
+   `claude` exits 127 — which reads as "the agent crashed", not "PATH is wrong".
+   Captured from an interactive login shell, **fenced between two markers**:
+   rc files are free to print, and a zsh session plugin emitting
+   `Restored session: …` before the script silently poisons the value. A
+   multi-line result is rejected for the same reason. `MD_AGENT_PATH` overrides
+   it — in a container the image's PATH is already right and spawning a login
+   shell per boot is waste.
+2. **Bundled-runtime fallback** appends, never prepends: prepending would shadow
+   the version a user's own project pins.
+3. **Process-tree kill** (`procKill.ts`). Polite signal first, then after a 4s
+   grace, SIGKILL the process **group**. A bare kill signals the direct child
+   only, so a child that ignores it never dies and its own children — MCP
+   servers, helper daemons — are orphaned to PID 1. Escalation runs on a timer,
+   not inline, so the caller is not blocked for the grace.
+   Verified against the exact leak: a `bash -c 'trap "" HUP; sleep 900 & sleep
+   900'` tree survives the polite kill (3 processes still up after 1s) and is
+   gone after the escalation (0).
+4. `session:resolveCwd` and `pty:redraw`. Redraw resizes a column narrower and
+   back — there is no portable redraw signal, and a size change is what every
+   terminal program already listens for.
+5. Session **resume** landed with provisioning: the id comes from the registry
+   where the hook server writes it, so a resume works after a crash without the
+   client remembering anything.
 
 ### ☐ C2. Data plane — ~2.3k LOC → `rusqlite` + `git2`
 1. `config.ts` (827) → `config:*` (4 channels). Largest non-hive module; mostly

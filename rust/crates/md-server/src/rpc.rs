@@ -66,6 +66,16 @@ pub enum Op {
     ControlGateTool,
     AppStartClosingTime,
     AppCancelClosingTime,
+    HiveTextSearch,
+    HistoryAdd,
+    HistoryList,
+    HistorySearch,
+    SessionResolveCwd,
+    PtyRedraw,
+    FsReadBinary,
+    ConfigEnsureHome,
+    ConfigSetAgentTokenCap,
+    AnalyticsMessageSent,
 }
 
 /// What this server intends to do about a channel.
@@ -189,6 +199,16 @@ pub const fn handler_for(rpc: Rpc) -> Option<Op> {
         Rpc::ControlGateTool => Op::ControlGateTool,
         Rpc::AppStartClosingTime => Op::AppStartClosingTime,
         Rpc::AppCancelClosingTime => Op::AppCancelClosingTime,
+        Rpc::HiveTextSearch => Op::HiveTextSearch,
+        Rpc::HistoryAdd => Op::HistoryAdd,
+        Rpc::HistoryList => Op::HistoryList,
+        Rpc::HistorySearch => Op::HistorySearch,
+        Rpc::SessionResolveCwd => Op::SessionResolveCwd,
+        Rpc::PtyRedraw => Op::PtyRedraw,
+        Rpc::FsReadBinary => Op::FsReadBinary,
+        Rpc::ConfigEnsureHome => Op::ConfigEnsureHome,
+        Rpc::ConfigSetAgentTokenCap => Op::ConfigSetAgentTokenCap,
+        Rpc::AnalyticsMessageSent => Op::AnalyticsMessageSent,
         _ => return None,
     })
 }
@@ -282,7 +302,7 @@ mod tests {
         for (r, why) in not_applicable() {
             println!("  never {} — {}", r.as_str(), why);
         }
-        assert_eq!(done, 49, "handler count changed; update this number intentionally");
+        assert_eq!(done, 59, "handler count changed; update this number intentionally");
         assert_eq!(done + todo + na, total, "every channel must have exactly one plan");
     }
 
@@ -329,6 +349,7 @@ mod tests {
             Op::ControlPause, Op::ControlResume, Op::ControlHalt, Op::ControlSteer,
             Op::ControlSnapshot, Op::ControlAutoDelivery, Op::ControlGateTool,
             Op::AppStartClosingTime, Op::AppCancelClosingTime,
+            Op::HiveTextSearch, Op::HistoryAdd, Op::HistoryList, Op::HistorySearch, Op::SessionResolveCwd, Op::PtyRedraw, Op::FsReadBinary, Op::ConfigEnsureHome, Op::ConfigSetAgentTokenCap, Op::AnalyticsMessageSent,
         ];
         for op in all {
             assert!(ops.contains(&op), "{op:?} is not reachable from any channel");

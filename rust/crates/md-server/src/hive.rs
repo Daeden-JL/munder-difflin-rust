@@ -203,6 +203,55 @@ impl Hive {
             .collect::<Vec<Value>>())
     }
 
+    /// Substring search across the hive's own writing: the board, the ledger,
+    /// and every agent's memory.
+    ///
+    /// Deliberately plain — case-insensitive substring, at most three hits per
+    /// file. A real index would have to be maintained against files agents
+    /// rewrite constantly; this reads them, which is always correct and fast
+    /// enough for a floor's worth of markdown.
+    pub fn text_search(&self, query: &str) -> Value {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return json!({ "ok": false, "results": [] });
+        }
+
+        let mut targets = vec![
+            (self.root.join("board.md"), "board.md".to_string()),
+            (self.root.join("tasks.json"), "tasks.json".to_string()),
+        ];
+        if let Ok(dir) = std::fs::read_dir(self.root.join("agents")) {
+            for e in dir.filter_map(Result::ok) {
+                if let Some(id) = e.file_name().to_str() {
+                    targets.push((e.path().join("memory.md"), format!("{id}/memory.md")));
+                }
+            }
+        }
+
+        let mut results = Vec::new();
+        for (path, source) in targets {
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            let mut hits = 0;
+            for line in text.lines() {
+                if hits >= 3 {
+                    break;
+                }
+                let Some(idx) = line.to_lowercase().find(&q) else { continue };
+                // Roughly 40 characters of context either side, on character
+                // boundaries — slicing a UTF-8 line by byte index would panic on
+                // any file containing non-ASCII, which markdown routinely does.
+                let chars: Vec<char> = line.chars().collect();
+                let at = line[..idx].chars().count();
+                let start = at.saturating_sub(40);
+                let end = (at + q.chars().count() + 40).min(chars.len());
+                let excerpt: String = chars[start..end].iter().collect();
+                results.push(json!({ "source": source, "excerpt": excerpt.trim() }));
+                hits += 1;
+            }
+        }
+        json!({ "ok": true, "results": results })
+    }
+
     // ── Task ledger ─────────────────────────────────────────────────────────
 
     /// Persist the ledger, folding `incoming` over what is on disk.
@@ -1021,6 +1070,37 @@ mod tests {
         assert!(h.route_once().is_empty());
         assert!(!path.exists());
         assert!(h.agent_dir("jim").join("outbox/.sent/bad-m1.json").exists());
+    }
+
+    #[test]
+    fn text_search_covers_the_board_the_ledger_and_agent_memory() {
+        let h = with_agents(&["jim"]);
+        std::fs::write(h.root.join("board.md"), "Q3 plan: ship the STAPLER audit\n").unwrap();
+        h.add_task(json!({ "id": "t1", "title": "stapler inventory" }));
+        std::fs::write(h.agent_dir("jim").join("memory.md"), "the stapler is in jelly\n").unwrap();
+
+        let out = h.text_search("STAPLER");
+        assert_eq!(out["ok"], true);
+        let sources: Vec<&str> = out["results"].as_array().unwrap()
+            .iter().map(|r| r["source"].as_str().unwrap()).collect();
+        assert!(sources.contains(&"board.md"));
+        assert!(sources.contains(&"tasks.json"));
+        assert!(sources.contains(&"jim/memory.md"));
+
+        assert_eq!(h.text_search("  ")["ok"], false, "an empty query is not a search");
+        assert!(h.text_search("nothing here")["results"].as_array().unwrap().is_empty());
+    }
+
+    /// Slicing a line by byte index panics on any file with non-ASCII, and
+    /// markdown routinely has some.
+    #[test]
+    fn an_excerpt_from_a_non_ascii_line_does_not_panic() {
+        let h = with_agents(&["jim"]);
+        std::fs::write(h.agent_dir("jim").join("memory.md"),
+            "— café — naïve — the STAPLER — 日本語 —\n").unwrap();
+        let out = h.text_search("stapler");
+        assert_eq!(out["results"].as_array().unwrap().len(), 1);
+        assert!(out["results"][0]["excerpt"].as_str().unwrap().contains("STAPLER"));
     }
 
     #[test]

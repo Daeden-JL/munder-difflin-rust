@@ -5,6 +5,7 @@ pub mod closing;
 pub mod control;
 pub mod git;
 pub mod hooks;
+pub mod history;
 pub mod hive;
 pub mod handlers;
 pub mod rpc;

@@ -52,6 +52,9 @@ pub enum PtyEvent {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PtyInfo {
+    /// Current size, so a caller can nudge a redraw without guessing it.
+    pub cols: u16,
+    pub rows: u16,
     pub id: String,
     pub cwd: String,
     pub command: String,
@@ -78,7 +81,13 @@ struct Session {
     killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
     last_output_at: Arc<Mutex<u64>>,
     has_output: Arc<Mutex<bool>>,
+    /// Last size applied. Held so a redraw can round-trip the size without the
+    /// caller having to know it — guessing would resize the agent's terminal.
+    cols: Mutex<u16>,
+    rows: Mutex<u16>,
 }
+
+pub mod env;
 
 pub struct PtyManager {
     /// Shared with each session's waiter thread so a session can remove itself
@@ -121,6 +130,11 @@ impl PtyManager {
         let mut cmd = CommandBuilder::new(&resolved.program);
         cmd.args(&resolved.args);
         cmd.cwd(&resolved.cwd);
+        // PATH first, so an explicit one in the request can still override it.
+        // A server started as a daemon inherits a minimal PATH that usually
+        // lacks whatever installed the agent CLI, and a bare `claude` then
+        // exits 127 — which reads as "the agent crashed", not "PATH is wrong".
+        cmd.env("PATH", env::agent_path());
         for (k, v) in &resolved.env {
             cmd.env(k, v);
         }
@@ -210,6 +224,8 @@ impl PtyManager {
             killer,
             last_output_at,
             has_output,
+            cols: Mutex::new(req.cols),
+            rows: Mutex::new(req.rows),
         };
         self.sessions.lock().unwrap().insert(id.to_string(), session);
         Ok(rx)
@@ -252,6 +268,8 @@ impl PtyManager {
         s.master
             .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .map_err(|e| PtyError::Spawn(format!("resize: {e}")))?;
+        *s.cols.lock().unwrap() = cols;
+        *s.rows.lock().unwrap() = rows;
         Ok(())
     }
 
@@ -261,7 +279,27 @@ impl PtyManager {
         if &s.tenant != tenant {
             return Err(PtyError::WrongTenant(id.into()));
         }
+        // Polite first: the child gets a chance to save state and exit cleanly.
         s.killer.kill().map_err(|e| PtyError::Spawn(format!("kill: {e}")))?;
+
+        // Then make sure the PIDs are actually released. A bare kill signals the
+        // direct child only, so a child that ignores the signal never dies and
+        // its own children — MCP servers, helper daemons — are orphaned to PID 1.
+        // Escalation runs on a timer rather than inline: this must not block the
+        // caller for the grace period.
+        let pid = s.pid;
+        if pid != 0 {
+            std::thread::spawn(move || {
+                std::thread::sleep(env::KILL_GRACE);
+                if env::is_alive(pid) {
+                    tracing::warn!(pid, "pty child ignored the polite kill — killing the tree");
+                }
+                // Run unconditionally: the leader may be gone while its
+                // descendants still hold the group id, which is exactly the
+                // orphan-reaping case.
+                env::hard_kill_tree(pid);
+            });
+        }
         Ok(())
     }
 
@@ -275,6 +313,8 @@ impl PtyManager {
             .filter(|s| &s.tenant == tenant)
             .map(|s| PtyInfo {
                 id: s.id.clone(),
+                cols: *s.cols.lock().unwrap(),
+                rows: *s.rows.lock().unwrap(),
                 cwd: s.cwd.clone(),
                 command: s.command.clone(),
                 pid: s.pid,

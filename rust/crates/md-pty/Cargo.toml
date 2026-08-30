@@ -12,3 +12,8 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 serde.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# Process-group signalling: killing a pty child without its group leaks every
+# helper process the agent started.
+libc = "0.2"
