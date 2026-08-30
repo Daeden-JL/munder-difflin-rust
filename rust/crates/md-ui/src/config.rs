@@ -141,16 +141,34 @@ fn Agents(
         let slots = archetypes.get_untracked();
         let themes = theme::builtin();
         let Some(t) = themes.get(theme_idx.get_untracked() % themes.len().max(1)).cloned() else { return };
-        status.set("renaming…".into());
+        status.set("recasting the floor…".into());
         leptos::task::spawn_local(async move {
-            let mut done = 0;
-            for (id, arch) in slots {
-                let Some(c) = t.character(&arch) else { continue };
-                if api::rpc("hive:renameAgent", json!([id, c.display])).await.is_ok() {
-                    done += 1;
+            // One request for the whole floor, not one per agent: the server
+            // holds every agent BEFORE renaming any, so no one is handed work
+            // while the floor is half-renamed.
+            let cast: Vec<Value> = slots
+                .into_iter()
+                .filter_map(|(id, arch)| {
+                    let c = t.character(&arch)?;
+                    Some(json!({
+                        "id": id,
+                        "name": c.display,
+                        // The character becomes part of the agent's identity, so
+                        // a recast changes how it behaves and not just its name.
+                        // The trait alone — the name is already the agent's, and
+                        // repeating it reads as "Mal Captain. Aims to misbehave."
+                        "persona": c.personality.trait_line.clone(),
+                    }))
+                })
+                .collect();
+            match api::post_json("/api/recast", &json!(cast)).await {
+                Ok(v) => {
+                    let n = v["renamed"].as_u64().unwrap_or(0);
+                    let note = v["note"].as_str().unwrap_or("");
+                    status.set(format!("recast {n} agents as the {} cast. {note}", t.name));
                 }
+                Err(e) => status.set(e),
             }
-            status.set(format!("renamed {done} agents to the {} cast", t.name));
             changed.update(|n| *n = n.wrapping_add(1));
         });
     };
@@ -218,10 +236,12 @@ fn Agents(
                     }
                 </For>
                 <p class="hint">
-                    "Agents keep their own names across a theme change — the name is
-                     what their memory and transcript are keyed to."
+                    "Switching themes changes the costume only. Recasting is the real
+                     thing: every agent is held, renamed, and its identity rewritten with
+                     its new character — then released so its work resumes. Memory,
+                     transcripts and desks are untouched."
                 </p>
-                <button class="ghost" on:click=adopt>"rename agents to this theme's cast"</button>
+                <button on:click=adopt>"Recast this floor"</button>
             </section>
         </div>
     }

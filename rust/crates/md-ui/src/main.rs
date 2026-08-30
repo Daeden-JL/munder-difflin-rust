@@ -7,6 +7,7 @@
 
 mod api;
 mod config;
+mod dialogs;
 mod editor;
 mod floor;
 mod markdown;
@@ -18,6 +19,7 @@ use leptos::prelude::*;
 use serde_json::{json, Value};
 
 use config::Config;
+use dialogs::{ClosingTime, Modal, ThemePicker};
 use editor::Editor;
 use floor::{Floor, Occupant};
 use transcript::Conversation;
@@ -76,6 +78,11 @@ fn App() -> impl IntoView {
     let is_admin = RwSignal::new(false);
     // Bumped by the config panel when it changes something the floor reads.
     let config_changed = RwSignal::new(0u32);
+    let closing_open = RwSignal::new(false);
+    let setup_open = RwSignal::new(false);
+    // Shown once, on a floor that has never chosen. The floor is the first thing
+    // anyone sees, so the choice is worth asking for rather than defaulting to.
+    let picker_open = RwSignal::new(false);
     let root = RwSignal::new("~".to_string());
     // Derived ONCE and shared: the roster and the floor must not compute this
     // separately, or a face beside a name stops being the figure on the floor.
@@ -98,6 +105,17 @@ fn App() -> impl IntoView {
         // panel from someone who has it.
         if let Ok(me) = api::get_json("/api/me").await {
             is_admin.set(me["admin"].as_bool().unwrap_or(false));
+        }
+        // Restore the saved theme, and ask for one if this floor has never
+        // chosen. Stored server-side, so the answer follows the tenant rather
+        // than the browser.
+        if let Ok(cfg) = api::rpc("config:get", json!([])).await {
+            if let Some(id) = cfg["theme"].as_str() {
+                if let Some(i) = theme::builtin().iter().position(|t| t.id == id) {
+                    theme.set(i);
+                }
+            }
+            picker_open.set(cfg["themeChosen"].as_bool() != Some(true));
         }
     });
 
@@ -200,13 +218,8 @@ fn App() -> impl IntoView {
                             on:click=move |_| pane.set("chat".into())>"chat"</button>
                     <button class="ghost" class:on=move || pane.get() == "files"
                             on:click=move |_| pane.set("files".into())>"files"</button>
-                    <button class="ghost" class:on=move || pane.get() == "config"
-                            on:click=move |_| pane.set("config".into())>"setup"</button>
-                    <button class="ghost" on:click=move |_| {
-                        leptos::task::spawn_local(async move {
-                            let _ = api::rpc("app:startClosingTime", json!([])).await;
-                        });
-                    }>"closing time"</button>
+                    <button class="ghost" on:click=move |_| setup_open.set(true)>"setup"</button>
+                    <button class="ghost" on:click=move |_| closing_open.set(true)>"closing time"</button>
                 </header>
                 <div class="body">
                     <div class="side" style=move || format!("width:{}px", side_px.get())>
@@ -232,9 +245,6 @@ fn App() -> impl IntoView {
                         // fallback chain reads as a puzzle at the third case.
                         {move || match pane.get().as_str() {
                             "files" => view! { <Editor root/> }.into_any(),
-                            "config" => view! {
-                                <Config theme_idx=theme changed=config_changed archetypes is_admin/>
-                            }.into_any(),
                             _ => view! {
                                 <Conversation agent=selected activity persona=Signal::derive(move || {
                                     let id = selected.get()?;
@@ -251,6 +261,17 @@ fn App() -> impl IntoView {
                     </div>
                 </div>
             </div>
+
+            // Setup is a DIALOG, not a panel: it is a place you go to change
+            // things and then leave, and taking the floor away to show it made
+            // the app feel like it had modes.
+            <Show when=move || setup_open.get()>
+                <Modal title="Setup" on_close=Callback::new(move |_| setup_open.set(false))>
+                    <Config theme_idx=theme changed=config_changed archetypes is_admin/>
+                </Modal>
+            </Show>
+            <ClosingTime open=closing_open/>
+            <ThemePicker open=picker_open theme_idx=theme/>
         </Show>
     }
 }

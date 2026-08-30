@@ -578,6 +578,82 @@
         "color": "#4a5560",
         "lip": true
       }
+    ],
+    "desks": {
+      "leader": [
+        150,
+        64
+      ],
+      "second": [
+        110,
+        64
+      ],
+      "operator": [
+        190,
+        64
+      ],
+      "engineer": [
+        262,
+        96
+      ],
+      "analyst": [
+        110,
+        106
+      ],
+      "wildcard": [
+        70,
+        140
+      ],
+      "muscle": [
+        190,
+        106
+      ],
+      "counsel": [
+        150,
+        140
+      ],
+      "liaison": [
+        230,
+        140
+      ]
+    },
+    "doors": [
+      {
+        "label": "SHUTTLE I",
+        "x": 0,
+        "y": 54,
+        "w": 16,
+        "h": 34,
+        "color": "#4a5560",
+        "threshold": [
+          24,
+          74
+        ]
+      },
+      {
+        "label": "SHUTTLE II",
+        "x": 304,
+        "y": 54,
+        "w": 16,
+        "h": 34,
+        "color": "#4a5560",
+        "threshold": [
+          296,
+          74
+        ]
+      },
+      {
+        "label": "STAIRS",
+        "x": 140,
+        "y": 150,
+        "w": 40,
+        "h": 26,
+        "color": "#5c5344",
+        "threshold": [
+          160,
+          146
+        ]
+      }
     ]
   }
 }

@@ -146,6 +146,10 @@ pub async fn build(cfg: &ServerConfig, accounts: Arc<accounts::Accounts>, sandbo
         .route("/api/health", get(health))
         .route("/api/me", get(me))
         .route("/api/mcp", get(mcp_catalog))
+        // Web-native, like /api/transcript: the Electron bridge had no recast
+        // channel, and adding one to the generated enum would make the parity
+        // numbers describe a contract that never existed.
+        .route("/api/recast", post(recast_route))
         // Account management. These name `Admin` in their signatures, so the
         // check is in the type rather than in a middleware someone has to
         // remember to attach.
@@ -448,6 +452,24 @@ async fn mcp_catalog(
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_else(|| serde_json::json!({}));
     Json(serde_json::json!({ "catalog": mcp::catalog_view(&cfg) }))
+}
+
+/// Rename the floor to a theme's cast, rebuilding each agent's identity.
+async fn recast_route(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    auth::Tenant(tenant): auth::Tenant,
+    Json(cast): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let Some(paths) = state.paths(&tenant) else {
+        return Json(serde_json::json!({ "ok": false, "error": "unknown tenant" }));
+    };
+    let ctx = handlers::Ctx { state, tenant, paths, args: vec![cast] };
+    match handlers::recast(&ctx) {
+        md_contract::RpcResponse::Ok { result } => Json(result),
+        md_contract::RpcResponse::Err { error } => {
+            Json(serde_json::json!({ "ok": false, "error": error.message }))
+        }
+    }
 }
 
 async fn accounts_list(

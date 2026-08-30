@@ -138,6 +138,8 @@ Write short lines. They render in a speech bubble about 150 pixels wide.
   "trim": "#4a4034",        // skirting between the two planes
   "props": [ ... ],         // scenery
   "stations": [ ... ],      // where work happens
+  "desks": { ... },         // each archetype's own place
+  "doors": [ ... ],         // ways in and out
   "roam": [48, 84, 268, 140]
 }
 ```
@@ -182,6 +184,36 @@ walks to the matching station:
 **All five kinds are required.** The `label` is yours: a `terminal` can be
 ENGINE on a ship, ENGINEERING on a bridge, or HANGAR in a docking bay. That is
 where most of a theme's character comes from.
+
+### Desks: where each character belongs
+
+```jsonc
+"desks": {
+  "leader":   [150, 64],
+  "engineer": [262, 96]
+}
+```
+
+One `[x, y]` per archetype. Characters **gravitate home**: an idle agent mostly
+returns to its own desk and only sometimes wanders, weighted by `restless`. A
+floor where everyone drifts anywhere reads as a crowd; a floor where everyone
+has a place reads as a workplace. Give the `leader` the best seat — the corner
+office, the captain's chair, the centre of the bridge.
+
+### Doors: ways in and out
+
+```jsonc
+{ "label": "TURBOLIFT", "x": 148, "y": 46, "w": 28, "h": 34,
+  "color": "#3d4a66", "threshold": [162, 86] }
+```
+
+`threshold` is where someone standing in the doorway is: a newly hired agent
+appears there and walks to its desk, so joining the floor is something you see
+happen rather than a figure blinking into existence.
+
+Doors are also most of a room's identity. Serenity has two shuttles and the
+stairs to the catwalk; both Star Trek ships have a turbolift; the Office has
+reception and the break room; A New Hope has the bay doors and the ship's ramp.
 
 ### Roam: where they wander
 

@@ -198,6 +198,70 @@
         "color": "#9a8d76",
         "round": true
       }
+    ],
+    "desks": {
+      "leader": [
+        110,
+        66
+      ],
+      "second": [
+        196,
+        96
+      ],
+      "operator": [
+        140,
+        66
+      ],
+      "engineer": [
+        236,
+        84
+      ],
+      "analyst": [
+        96,
+        118
+      ],
+      "wildcard": [
+        60,
+        64
+      ],
+      "muscle": [
+        28,
+        128
+      ],
+      "counsel": [
+        60,
+        96
+      ],
+      "liaison": [
+        140,
+        118
+      ]
+    },
+    "doors": [
+      {
+        "label": "BAY DOORS",
+        "x": 0,
+        "y": 90,
+        "w": 16,
+        "h": 52,
+        "color": "#5a5044",
+        "threshold": [
+          26,
+          116
+        ]
+      },
+      {
+        "label": "RAMP",
+        "x": 180,
+        "y": 92,
+        "w": 16,
+        "h": 20,
+        "color": "#6d6660",
+        "threshold": [
+          176,
+          104
+        ]
+      }
     ]
   },
   "cast": {

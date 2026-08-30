@@ -141,6 +141,7 @@ pub async fn run(op: Op, ctx: Ctx) -> RpcResponse {
             RpcResponse::ok(hive::Hive::new(ctx.paths.hive_root()).text_search(&q))
         }
 
+
         Op::HistoryAdd => {
             let e: Value = tri!(ctx.arg(0));
             let (Some(agent), Some(text)) = (
@@ -838,6 +839,96 @@ fn telemetry_snapshot(ctx: &Ctx) -> Value {
         }
     }
     json!({ "usage": usage, "spans": spans })
+}
+
+/// Recast the floor: rename every agent and rebuild its identity.
+///
+/// Three steps, in this order for a reason:
+///
+/// 1. **Hold** every agent, so nothing is dispatched work mid-rebuild.
+/// 2. **Rename and re-provision**, rewriting `identity.md` with the new name and
+///    character. Memory, transcript, session id and desk are untouched — they
+///    are keyed to the agent's ID, which never changes.
+/// 3. **Release** the holds, so in-flight work resumes under the new identity.
+///
+/// A running agent does not re-read its identity mid-session, so the change
+/// takes effect on its next turn. That is stated in the result rather than
+/// glossed over — the alternative is killing live sessions, which loses more
+/// than it gains.
+pub fn recast(ctx: &Ctx) -> RpcResponse {
+    let cast: Value = tri!(ctx.arg(0));
+    let Some(list) = cast.as_array() else {
+        return RpcResponse::ok(json!({ "ok": false, "error": "expected a list of {id,name,persona}" }));
+    };
+
+    let hive = hive::Hive::new(ctx.paths.hive_root());
+    let control = ctx.state.control(&ctx.tenant);
+    let reg = hive.registry();
+
+    // 1. Hold everyone first — all of them, before any rebuild, so no agent is
+    //    handed work while the floor is half-renamed.
+    let ids: Vec<String> = list
+        .iter()
+        .filter_map(|e| e["id"].as_str().map(String::from))
+        .filter(|id| !reg["agents"][id].is_null())
+        .collect();
+    for id in &ids {
+        control.pause(id, true);
+    }
+
+    let mut renamed = 0;
+    let mut errors = Vec::new();
+    for entry in list {
+        let (Some(id), Some(name)) = (entry["id"].as_str(), entry["name"].as_str()) else {
+            continue;
+        };
+        if reg["agents"][id].is_null() {
+            continue;
+        }
+        let out = hive.rename_agent(id, name);
+        if out["ok"].as_bool() != Some(true) {
+            errors.push(json!({ "id": id, "error": out["error"] }));
+            continue;
+        }
+
+        // 2. Rebuild the identity so the character is in the agent's own
+        //    documents, not just in the UI.
+        let a = &reg["agents"][id];
+        let meta = spawn::AgentMeta {
+            id: id.to_string(),
+            name: name.to_string(),
+            provider: a["provider"].as_str().unwrap_or("claude").to_string(),
+            role: a["role"].as_str().map(String::from),
+            cwd: a["cwd"].as_str().unwrap_or("").to_string(),
+            is_god: a["isGod"].as_bool().unwrap_or(false),
+            persona: entry["persona"].as_str().map(String::from),
+        };
+        let p = spawn::Provisioner {
+            hive: &hive,
+            hive_root: ctx.paths.hive_root(),
+            hook_bin: hook_bin(),
+            config_file: ctx.paths.config_file(),
+        };
+        match p.ensure_agent(&meta) {
+            Ok(_) => renamed += 1,
+            Err(e) => errors.push(json!({ "id": id, "error": e })),
+        }
+    }
+
+    // 3. Release, so work resumes under the new identity.
+    for id in &ids {
+        control.pause(id, false);
+    }
+
+    RpcResponse::ok(json!({
+        "ok": errors.is_empty(),
+        "renamed": renamed,
+        "errors": errors,
+        // Said plainly: a live session keeps the identity it started with. One
+        // line, because a wrapped literal keeps its indentation and this string
+        // is shown to a person.
+        "note": "Running agents adopt their new identity on their next turn; memory, transcripts and desks are unchanged.",
+    }))
 }
 
 fn mempalace_path() -> Option<String> {
@@ -1809,6 +1900,7 @@ fn pty_spawn(ctx: &Ctx) -> RpcResponse {
             role: meta.get("role").and_then(|v| v.as_str()).map(String::from),
             cwd: cwd.display().to_string(),
             is_god: meta.get("isGod").and_then(|v| v.as_bool()).unwrap_or(false),
+            persona: meta.get("persona").and_then(|v| v.as_str()).map(String::from),
         };
         let hive = hive::Hive::new(ctx.paths.hive_root());
 

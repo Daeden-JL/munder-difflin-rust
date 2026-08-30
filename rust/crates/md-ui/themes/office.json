@@ -619,6 +619,70 @@
         "color": "#8a8f98",
         "lip": true
       }
+    ],
+    "desks": {
+      "leader": [
+        268,
+        60
+      ],
+      "second": [
+        64,
+        84
+      ],
+      "operator": [
+        114,
+        84
+      ],
+      "engineer": [
+        180,
+        84
+      ],
+      "analyst": [
+        230,
+        84
+      ],
+      "wildcard": [
+        64,
+        122
+      ],
+      "muscle": [
+        114,
+        122
+      ],
+      "counsel": [
+        180,
+        122
+      ],
+      "liaison": [
+        230,
+        122
+      ]
+    },
+    "doors": [
+      {
+        "label": "RECEPTION",
+        "x": 292,
+        "y": 6,
+        "w": 22,
+        "h": 38,
+        "color": "#7a6146",
+        "threshold": [
+          300,
+          50
+        ]
+      },
+      {
+        "label": "BREAK ROOM",
+        "x": 0,
+        "y": 96,
+        "w": 14,
+        "h": 34,
+        "color": "#6f5b40",
+        "threshold": [
+          22,
+          116
+        ]
+      }
     ]
   }
 }

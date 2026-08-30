@@ -198,6 +198,58 @@
         "color": "#6e7488",
         "lip": true
       }
+    ],
+    "desks": {
+      "leader": [
+        158,
+        108
+      ],
+      "second": [
+        36,
+        66
+      ],
+      "operator": [
+        96,
+        152
+      ],
+      "engineer": [
+        256,
+        100
+      ],
+      "analyst": [
+        36,
+        100
+      ],
+      "wildcard": [
+        140,
+        152
+      ],
+      "muscle": [
+        36,
+        134
+      ],
+      "counsel": [
+        256,
+        66
+      ],
+      "liaison": [
+        256,
+        134
+      ]
+    },
+    "doors": [
+      {
+        "label": "TURBOLIFT",
+        "x": 148,
+        "y": 46,
+        "w": 28,
+        "h": 34,
+        "color": "#3d4a66",
+        "threshold": [
+          162,
+          86
+        ]
+      }
     ]
   },
   "cast": {

@@ -85,6 +85,13 @@ struct Walker {
     say_t: f64,
     /// How restless this character is, from its personality.
     restless: f64,
+    /// This character's own desk. Idling returns here rather than stopping
+    /// wherever the last wander ended — a floor where everyone drifts anywhere
+    /// reads as a crowd, not a workplace.
+    home: Option<[f64; 2]>,
+    /// Walking in for the first time. A newly hired agent arrives through a
+    /// door instead of materialising at its desk.
+    entering: bool,
 }
 
 impl Walker {
@@ -96,6 +103,7 @@ impl Walker {
         Self {
             x, y, tx: x, ty: y, at: None, facing_back: false, step: 0, step_t: 0.0,
             linger: 0.0, roam, seed, saying: None, say_t: 0.0, restless,
+            home: None, entering: false,
         }
     }
 
@@ -154,15 +162,40 @@ impl Walker {
         if self.at.is_some() {
             return;
         }
+        // Arriving: the first stop is the desk, and the walk in is the
+        // introduction.
+        if self.entering {
+            self.entering = false;
+            if let Some([hx, hy]) = self.home {
+                self.tx = hx;
+                self.ty = hy;
+                return;
+            }
+        }
+
         self.linger -= dt;
         if self.linger <= 0.0 {
             // A restless character lingers briefly; a still one settles. This is
             // the personality showing in movement rather than only in words.
             let patience = 1.0 - self.restless.clamp(0.0, 1.0);
             self.linger = LINGER_SECS * (0.4 + patience * 1.8) + self.rand() * LINGER_SECS;
-            let [x0, y0, x1, y1] = self.roam;
-            self.tx = x0 + self.rand() * (x1 - x0);
-            self.ty = y0 + self.rand() * (y1 - y0);
+
+            // Mostly go home; sometimes wander. How often depends on how
+            // restless the character is, so Creed roams and Stanley sits.
+            let wander = self.rand() < 0.25 + self.restless.clamp(0.0, 1.0) * 0.5;
+            match (self.home, wander) {
+                (Some([hx, hy]), false) => {
+                    // A little scatter around the desk, so two visits do not
+                    // land on the identical pixel.
+                    self.tx = hx + (self.rand() - 0.5) * 6.0;
+                    self.ty = hy + (self.rand() - 0.5) * 4.0;
+                }
+                _ => {
+                    let [x0, y0, x1, y1] = self.roam;
+                    self.tx = x0 + self.rand() * (x1 - x0);
+                    self.ty = y0 + self.rand() * (y1 - y0);
+                }
+            }
             // Muttering on settling, not on a timer: the line reads as a thought
             // rather than a ticker.
             if self.rand() < 0.45 {
@@ -370,7 +403,19 @@ pub fn Floor(
                             let restless = t.character(&o.archetype)
                                 .map(|c| c.personality.restless)
                                 .unwrap_or(0.5);
-                            w.insert(o.id.clone(), Walker::new(i, seed, t.layout.roam, restless));
+                            let mut walker = Walker::new(i, seed, t.layout.roam, restless);
+                            walker.home = t.layout.desks.get(&o.archetype).copied();
+                            // Arrive through a doorway rather than appearing at
+                            // the desk: someone joining the floor should be seen
+                            // to join it.
+                            if let Some(d) = t.layout.doors.first() {
+                                walker.x = d.threshold[0];
+                                walker.y = d.threshold[1];
+                                walker.entering = true;
+                                walker.tx = walker.x;
+                                walker.ty = walker.y;
+                            }
+                            w.insert(o.id.clone(), walker);
                         }
                     }
                     for o in list.iter() {
@@ -381,6 +426,10 @@ pub fn Floor(
                             // the new room's walls.
                             walker.roam = t.layout.roam;
                             walker.restless = p.restless;
+                            // Desks belong to the THEME, so a switch re-homes
+                            // everyone rather than leaving them at the old room's
+                            // coordinates.
+                            walker.home = t.layout.desks.get(&o.archetype).copied();
                             walker.advance(dt, &p);
                         }
                     }
@@ -524,6 +573,19 @@ fn draw(
             ctx.set_fill_style_str("rgba(0,0,0,0.24)");
             ctx.fill_rect(p.x, p.y + p.h - 2.0, p.w, 2.0);
         }
+    }
+
+    // Doorways, drawn on the wall band before anything stands in front of them.
+    for d in &l.doors {
+        ctx.set_fill_style_str(d.color.as_deref().unwrap_or("#3a3a42"));
+        ctx.fill_rect(d.x, d.y, d.w, d.h);
+        // A lighter inner panel reads as depth — an opening rather than a
+        // painted rectangle.
+        ctx.set_fill_style_str("rgba(255,255,255,0.10)");
+        ctx.fill_rect(d.x + 2.0, d.y + 2.0, d.w - 4.0, d.h - 4.0);
+        ctx.set_fill_style_str("rgba(255,255,255,0.7)");
+        ctx.set_font("5px ui-monospace, monospace");
+        let _ = ctx.fill_text(&d.label, d.x + 1.0, d.y + d.h - 2.0);
     }
 
     for st in &l.stations {

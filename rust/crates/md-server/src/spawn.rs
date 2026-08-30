@@ -31,6 +31,10 @@ pub struct AgentMeta {
     pub role: Option<String>,
     pub cwd: String,
     pub is_god: bool,
+    /// The character this agent is playing: a one-line description of how it
+    /// behaves. Written into `identity.md` and the system prompt, so a recast
+    /// changes what the agent IS, not only what it looks like.
+    pub persona: Option<String>,
 }
 
 /// What the PTY spawn needs to add so the agent is hive-aware.
@@ -339,8 +343,13 @@ impl Provisioner<'_> {
     }
 
     fn identity_text(&self, meta: &AgentMeta, role: &str) -> String {
+        let persona = match &meta.persona {
+            Some(p) if !p.trim().is_empty() => format!("- **Character:** {p}\n"),
+            _ => String::new(),
+        };
         format!(
             "# {name} ({id})\n\n\
+             {persona}\
              - **Role:** {role}\n\
              - **Working directory:** `{cwd}`\n\
              - **Hive root:** `{root}`\n\n\
@@ -352,12 +361,23 @@ impl Provisioner<'_> {
             role = role,
             cwd = meta.cwd,
             root = self.hive_root.display(),
+            persona = persona,
         )
     }
 
     fn injected_prompt(&self, meta: &AgentMeta, dir: &Path) -> String {
+        // The character is a manner, not a mandate: it colours how the agent
+        // writes, and is explicitly subordinate to doing the work correctly.
+        // Without that line a persona will happily be used as an excuse.
+        let persona = match &meta.persona {
+            Some(p) if !p.trim().is_empty() => format!(
+                " You are playing {p}. Let that colour your tone — never your judgement \
+                 or your diligence. Being in character is not a reason to do the work badly."
+            ),
+            _ => String::new(),
+        };
         format!(
-            "You are {name}, agent `{id}` on a Munder Difflin floor. Your identity is at \
+            "You are {name}, agent `{id}` on a Munder Difflin floor.{persona} Your identity is at \
              `{dir}/identity.md` and your durable memory at `{dir}/memory.md` — read both \
              before acting. Mail arrives as JSON files in `{dir}/inbox/`; move each to \
              `inbox/.done` once handled. To send mail, write a JSON message into \
@@ -405,6 +425,7 @@ mod tests {
             role: Some("sales".into()),
             cwd: std::env::temp_dir().display().to_string(),
             is_god: false,
+            persona: Some("Believes every rule is load-bearing.".into()),
         }
     }
 
@@ -460,6 +481,24 @@ mod tests {
         assert_eq!(preferred_role(Some("idle"), None, false), "idle");
         assert_eq!(preferred_role(None, None, true), "orchestrator (god)");
         assert_eq!(preferred_role(None, None, false), "agent");
+    }
+
+    /// A recast has to change what the agent IS, not only what it is called —
+    /// otherwise "recast" is a relabelling with extra steps.
+    #[test]
+    fn the_character_reaches_the_agents_own_identity() {
+        let (root, hive) = setup();
+        let p = Provisioner { hive: &hive, hive_root: root.clone(), hook_bin: "md-hook".into(),
+                              config_file: std::env::temp_dir().join("no-config.json") };
+        let inj = p.ensure_agent(&meta("jim")).unwrap();
+
+        let identity = std::fs::read_to_string(root.join("agents/jim/identity.md")).unwrap();
+        assert!(identity.contains("Believes every rule is load-bearing"), "{identity}");
+
+        let prompt = inj.args.join(" ");
+        assert!(prompt.contains("Believes every rule is load-bearing"));
+        // And it is bounded: a persona must not become an excuse for bad work.
+        assert!(prompt.contains("never your judgement"), "the persona is unbounded");
     }
 
     #[test]

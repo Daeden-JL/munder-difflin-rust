@@ -137,9 +137,46 @@ pub struct Layout {
     #[serde(default)]
     pub props: Vec<Prop>,
     pub stations: Vec<Station>,
-    /// Where agents wander when idle: `[x0, y0, x1, y1]`. Keeps them off the
-    /// walls and out of the furniture.
+    /// Each archetype's own desk, keyed by slot.
+    ///
+    /// Characters gravitate HOME. In the original, seats were claimed in order
+    /// with the orchestrator taking the corner office — a floor where everyone
+    /// wanders anywhere reads as a crowd, not a workplace.
+    #[serde(default)]
+    pub desks: HashMap<String, [f64; 2]>,
+    /// Doorways: where characters enter from and leave through.
+    ///
+    /// A room with no way in is a diorama. An agent that has just been hired
+    /// walks in through one of these, and an archived one walks out.
+    #[serde(default)]
+    pub doors: Vec<Door>,
+    /// Where agents wander when they are not at a desk: `[x0, y0, x1, y1]`.
     pub roam: [f64; 4],
+}
+
+/// A way in or out of the room.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Door {
+    pub label: String,
+    pub x: f64,
+    pub y: f64,
+    #[serde(default = "door_w")]
+    pub w: f64,
+    #[serde(default = "door_h")]
+    pub h: f64,
+    #[serde(default)]
+    pub color: Option<String>,
+    /// Where someone standing in this doorway is: the point they walk from on
+    /// arrival, and to on departure.
+    pub threshold: [f64; 2],
+}
+
+fn door_w() -> f64 {
+    22.0
+}
+fn door_h() -> f64 {
+    30.0
 }
 
 fn wall_depth() -> f64 {
