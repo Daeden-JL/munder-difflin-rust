@@ -52,6 +52,17 @@ header {
 .tag { font-size:10px; color:var(--dim); border:1px solid var(--line);
        border-radius:8px; padding:0 .35rem }
 
+/* ── floor ─────────────────────────────────────────────────────────────── */
+.main { flex:1; min-width:0; display:flex; flex-direction:column }
+.floor { flex:0 0 auto; border-bottom:1px solid var(--line); background:var(--panel) }
+.floor-bar { display:flex; align-items:center; gap:.5rem; padding:.35rem .7rem;
+             border-bottom:1px solid var(--line) }
+.floor-bar select { background:var(--bg); color:var(--fg); border:1px solid var(--line);
+                    border-radius:4px; padding:.15rem .4rem }
+/* The canvas scales to the panel; nearest-neighbour keeps the pixel art crisp
+   instead of letting the browser smooth it into mush. */
+.floor canvas { display:block; width:100%; max-height:15rem; image-rendering:pixelated; cursor:pointer }
+
 /* ── conversation ──────────────────────────────────────────────────────── */
 .convo { flex:1; min-width:0; display:flex; flex-direction:column }
 .stream { flex:1; overflow-y:auto; padding:1rem 1.1rem; display:flex;

@@ -1,7 +1,47 @@
-# Theme engine
+# Theme engine — BUILT
 
-Lets a user swap the cast, the pixel-map, and the flavor of the whole floor —
-The Office today, Serenity/Firefly or anything else tomorrow.
+_Design below; the implementation landed in `rust/crates/md-ui/{pixel,theme,floor}.rs`._
+
+## What shipped
+
+**Themes are data.** `rust/crates/md-ui/themes/*.json` — a cast of characters,
+each an art recipe plus a display name. The painter never names a character, so
+adding a cast costs a file rather than a code change.
+
+**Agents bind to an archetype, not a character.** Binding an agent to `dwight`
+is meaningless the moment someone switches themes; binding it to `second` is
+not. Assignment is by stable id order, so renaming an agent or re-sorting the
+sidebar does not reshuffle the floor.
+
+| slot | Office | Serenity |
+|---|---|---|
+| `leader` | Michael | Mal |
+| `second` | Dwight | Zoe |
+| `operator` | Jim | Wash |
+| `engineer` | Kevin | Kaylee |
+| `analyst` | Oscar | Simon |
+| `wildcard` | Creed | River |
+| `muscle` | Stanley | Jayne |
+| `counsel` | Toby | Book |
+| `liaison` | Pam | Inara |
+
+The Office cast was EXTRACTED from `portraitArt.ts`, not re-authored — the
+desktop app's own recipes, translated into theme JSON, so the art matches
+rather than resembles.
+
+**Serenity is the proof.** The Office theme would pass any validator written
+beside it, because the engine was shaped around it; a genuinely different cast
+is what finds the assumptions. A test asserts the two casts differ in every
+slot, and another paints all 18 characters and checks each covers the frame.
+
+Both themes fill all nine slots. A theme filling only some still dresses
+everyone: a missing slot falls back rather than leaving an invisible agent.
+
+**Failure modes are visible, not silent.** An unknown recipe FIELD is rejected
+at parse (`deny_unknown_fields`), so a typo is an error rather than a missing
+hat. An unknown VALUE — a hair style or garment a theme invents — still paints a
+character, so a theme file mistake never blanks someone out of the floor.
+
 
 ## What the code already gives us
 

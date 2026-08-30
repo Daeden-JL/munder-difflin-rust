@@ -1,0 +1,79 @@
+{
+  "id": "serenity",
+  "name": "Serenity",
+  "floor": "#8a7a62",
+  "wall": "#3f4a52",
+  "cast": {
+    "leader": {
+      "display": "Mal",
+      "recipe": {
+        "skin": "light", "hairc": [56, 40, 26], "hair": "styleShort", "part": "R",
+        "cloth": "dressshirt", "c1": [122, 90, 60], "brow": "flat", "mouth": "neutral"
+      }
+    },
+    "second": {
+      "display": "Zoe",
+      "recipe": {
+        "skin": "brown", "hairc": [30, 24, 20], "hair": "styleCurly",
+        "cloth": "sweater", "c1": [96, 82, 64], "brow": "flat", "mouth": "neutral",
+        "lashes": true
+      }
+    },
+    "operator": {
+      "display": "Wash",
+      "recipe": {
+        "skin": "light", "hairc": [186, 154, 90], "hair": "styleFloppy",
+        "cloth": "polo", "c1": [214, 158, 74], "c2": [120, 160, 130],
+        "brow": "raised", "mouth": "grin"
+      }
+    },
+    "engineer": {
+      "display": "Kaylee",
+      "recipe": {
+        "skin": "light", "hairc": [120, 76, 42], "hair": "styleFrame", "length": 18, "vol": 2,
+        "cloth": "cardigan", "c1": [232, 168, 176], "c2": [244, 240, 232],
+        "brow": "soft", "mouth": "smile", "blush": true, "lashes": true
+      }
+    },
+    "analyst": {
+      "display": "Simon",
+      "recipe": {
+        "skin": "light", "hairc": [40, 30, 22], "hair": "styleShort", "part": "L",
+        "cloth": "suit", "c1": [78, 88, 102], "tie": [110, 130, 150],
+        "brow": "flat", "mouth": "neutral"
+      }
+    },
+    "wildcard": {
+      "display": "River",
+      "recipe": {
+        "skin": "light", "hairc": [58, 40, 30], "hair": "styleMessy", "length": 14,
+        "cloth": "blouse", "c1": [206, 200, 190], "brow": "soft", "mouth": "neutral",
+        "lashes": true
+      }
+    },
+    "muscle": {
+      "display": "Jayne",
+      "recipe": {
+        "skin": "light", "hairc": [72, 54, 34], "hair": "styleSpiky",
+        "cloth": "sweater", "c1": [150, 136, 92], "facial": "stubble",
+        "brow": "angry", "mouth": "frown", "heavy": true
+      }
+    },
+    "counsel": {
+      "display": "Book",
+      "recipe": {
+        "skin": "brown", "hairc": [190, 186, 182], "hair": "styleBun",
+        "cloth": "sweater", "c1": [70, 66, 74], "facial": "goatee",
+        "brow": "soft", "mouth": "smile"
+      }
+    },
+    "liaison": {
+      "display": "Inara",
+      "recipe": {
+        "skin": "tan", "hairc": [56, 34, 26], "hair": "styleFrame", "length": 19, "vol": 2,
+        "cloth": "blouse", "c1": [156, 72, 96], "brow": "soft", "mouth": "smile",
+        "lashes": true
+      }
+    }
+  }
+}

@@ -1,0 +1,235 @@
+{
+  "id": "office",
+  "name": "The Office",
+  "floor": "#c8b89a",
+  "wall": "#e8e0d0",
+  "cast": {
+    "leader": {
+      "display": "Michael",
+      "recipe": {
+        "skin": "light",
+        "hairc": [
+          58,
+          42,
+          28
+        ],
+        "hair": "styleShort",
+        "part": "L",
+        "cloth": "suit",
+        "c1": [
+          58,
+          63,
+          74
+        ],
+        "tie": [
+          170,
+          58,
+          58
+        ],
+        "brow": "flat",
+        "mouth": "smile"
+      }
+    },
+    "second": {
+      "display": "Dwight",
+      "recipe": {
+        "skin": "light",
+        "hairc": [
+          64,
+          48,
+          28
+        ],
+        "hair": "styleShort",
+        "part": "L",
+        "recede": 1,
+        "cloth": "dressshirt",
+        "c1": [
+          184,
+          155,
+          62
+        ],
+        "tie": [
+          120,
+          82,
+          46
+        ],
+        "glasses": true,
+        "brow": "angry",
+        "mouth": "neutral"
+      }
+    },
+    "operator": {
+      "display": "Jim",
+      "recipe": {
+        "skin": "light",
+        "hairc": [
+          92,
+          60,
+          34
+        ],
+        "hair": "styleFloppy",
+        "cloth": "dressshirt",
+        "c1": [
+          172,
+          196,
+          224
+        ],
+        "tie": [
+          120,
+          130,
+          150
+        ],
+        "brow": "flat",
+        "mouth": "smile"
+      }
+    },
+    "engineer": {
+      "display": "Kevin",
+      "recipe": {
+        "skin": "light",
+        "hairc": [
+          58,
+          44,
+          30
+        ],
+        "hair": "styleBald",
+        "cloth": "polo",
+        "c1": [
+          110,
+          140,
+          180
+        ],
+        "c2": [
+          90,
+          120,
+          160
+        ],
+        "brow": "flat",
+        "mouth": "neutral",
+        "heavy": true
+      }
+    },
+    "analyst": {
+      "display": "Oscar",
+      "recipe": {
+        "skin": "tan",
+        "hairc": [
+          28,
+          22,
+          18
+        ],
+        "hair": "styleShort",
+        "part": "L",
+        "cloth": "sweater",
+        "c1": [
+          122,
+          60,
+          74
+        ],
+        "brow": "flat",
+        "mouth": "smile"
+      }
+    },
+    "wildcard": {
+      "display": "Creed",
+      "recipe": {
+        "skin": "light",
+        "hairc": [
+          170,
+          166,
+          156
+        ],
+        "hair": "styleBald",
+        "cloth": "dressshirt",
+        "c1": [
+          126,
+          130,
+          96
+        ],
+        "facial": "stubble",
+        "brow": "flat",
+        "mouth": "neutral"
+      }
+    },
+    "muscle": {
+      "display": "Stanley",
+      "recipe": {
+        "skin": "dark",
+        "hairc": [
+          60,
+          54,
+          48
+        ],
+        "hair": "styleRecede",
+        "cloth": "dressshirt",
+        "c1": [
+          150,
+          120,
+          86
+        ],
+        "tie": [
+          120,
+          78,
+          52
+        ],
+        "glasses": true,
+        "facial": "mustache",
+        "brow": "flat",
+        "mouth": "neutral",
+        "heavy": true
+      }
+    },
+    "counsel": {
+      "display": "Toby",
+      "recipe": {
+        "skin": "light",
+        "hairc": [
+          106,
+          90,
+          66
+        ],
+        "hair": "styleShort",
+        "part": "L",
+        "recede": 1,
+        "cloth": "dressshirt",
+        "c1": [
+          150,
+          150,
+          120
+        ],
+        "facial": "mustacheSm",
+        "brow": "soft",
+        "mouth": "frown"
+      }
+    },
+    "liaison": {
+      "display": "Pam",
+      "recipe": {
+        "skin": "light",
+        "hairc": [
+          120,
+          76,
+          42
+        ],
+        "hair": "styleFrame",
+        "length": 18,
+        "vol": 2,
+        "cloth": "cardigan",
+        "c1": [
+          236,
+          174,
+          192
+        ],
+        "c2": [
+          244,
+          242,
+          238
+        ],
+        "brow": "soft",
+        "mouth": "smile",
+        "blush": true,
+        "lashes": true
+      }
+    }
+  }
+}

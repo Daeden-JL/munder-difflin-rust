@@ -23,4 +23,8 @@ pulldown-cmark = { version = "0.12", default-features = false }
 
 [dependencies.web-sys]
 version = "0.3"
-features = ["HtmlInputElement", "HtmlTextAreaElement", "Element", "ScrollToOptions", "Window"]
+features = [
+  "HtmlInputElement", "HtmlTextAreaElement", "HtmlCanvasElement", "HtmlSelectElement",
+  "CanvasRenderingContext2d", "ImageData", "Element", "DomRect", "MouseEvent",
+  "ScrollToOptions", "Window", "Document",
+]

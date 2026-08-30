@@ -6,12 +6,16 @@
 //! them by regexing the TUI's glyphs off the screen.
 
 mod api;
+mod floor;
 mod markdown;
+mod pixel;
+mod theme;
 mod transcript;
 
 use leptos::prelude::*;
 use serde_json::{json, Value};
 
+use floor::{Floor, Occupant};
 use transcript::Conversation;
 
 /// How often the floor is re-read. Agent state changes arrive as hook events on
@@ -47,6 +51,10 @@ fn App() -> impl IntoView {
     // agent does something rather than on the poll interval.
     let activity = RwSignal::new(0u32);
     let status = RwSignal::new(String::new());
+    // Which bundled theme is on the floor. The chosen theme changes who the
+    // agents look like and nothing else — identity, memory and desk order are
+    // bound to the archetype, not the character.
+    let theme = RwSignal::new(0usize);
 
     // A successful authenticated call is the session probe: a cookie from an
     // earlier visit is still good, so a reload does not sign you out.
@@ -154,11 +162,36 @@ fn App() -> impl IntoView {
                 </header>
                 <div class="body">
                     <Roster agents selected/>
-                    <Conversation agent=selected activity/>
+                    <div class="main">
+                        <Floor occupants=Signal::derive(move || occupants(agents.get())) theme selected/>
+                        <Conversation agent=selected activity/>
+                    </div>
                 </div>
             </div>
         </Show>
     }
+}
+
+/// Agents as the floor draws them.
+///
+/// Archetypes are assigned over the roster in a STABLE order — id, not display
+/// name — so renaming an agent does not reshuffle the floor, and neither does a
+/// re-sort of the sidebar.
+fn occupants(mut agents: Vec<Agent>) -> Vec<Occupant> {
+    agents.sort_by(|a, b| a.id.cmp(&b.id));
+    let ids: Vec<String> = agents.iter().map(|a| a.id.clone()).collect();
+    let slots = theme::assign(&ids);
+    agents
+        .into_iter()
+        .filter(|a| !a.archived)
+        .map(|a| Occupant {
+            archetype: slots.get(&a.id).cloned().unwrap_or_else(|| "leader".into()),
+            status: if a.on_hold { "waiting".into() } else if a.live { "working".into() } else { "idle".into() },
+            id: a.id,
+            name: a.name,
+            live: a.live,
+        })
+        .collect()
 }
 
 #[component]
