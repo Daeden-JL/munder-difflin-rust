@@ -18,6 +18,8 @@ gloo-net = { version = "0.6", features = ["http", "websocket"] }
 gloo-timers = { version = "0.3", features = ["futures"] }
 futures = "0.3"
 console_error_panic_hook = "0.1"
+# Markdown is parsed to NODES, never to an HTML string — see markdown.rs.
+pulldown-cmark = { version = "0.12", default-features = false }
 
 [dependencies.web-sys]
 version = "0.3"

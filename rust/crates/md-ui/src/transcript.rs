@@ -59,6 +59,10 @@ pub fn Conversation(agent: RwSignal<Option<String>>, activity: RwSignal<u32>) ->
     let show_thinking = RwSignal::new(false);
     let sending = RwSignal::new(false);
     let error = RwSignal::new(String::new());
+    let stream_ref = NodeRef::<leptos::html::Div>::new();
+    // Follow the tail — but stop following the moment the reader scrolls up, or
+    // the view would yank them back to the bottom mid-sentence.
+    let pinned = RwSignal::new(true);
 
     // Switching agents starts a new conversation, so the accumulated entries and
     // the cursor must both reset — keeping the cursor would silently show the
@@ -128,9 +132,29 @@ pub fn Conversation(agent: RwSignal<Option<String>>, activity: RwSignal<u32>) ->
         });
     };
 
+    // Runs after each batch of entries is appended.
+    Effect::new(move |_| {
+        let _ = entries.get();
+        if !pinned.get_untracked() {
+            return;
+        }
+        if let Some(el) = stream_ref.get_untracked() {
+            el.set_scroll_top(el.scroll_height());
+        }
+    });
+
+    let on_scroll = move |_| {
+        if let Some(el) = stream_ref.get_untracked() {
+            // A small slack, so being a pixel off the bottom still counts as
+            // following.
+            let at_bottom = el.scroll_height() - el.scroll_top() - el.client_height() < 40;
+            pinned.set(at_bottom);
+        }
+    };
+
     view! {
         <main class="convo">
-            <div class="stream">
+            <div class="stream" node_ref=stream_ref on:scroll=on_scroll>
                 <Show when=move || agent.get().is_none()>
                     <p class="empty">"Pick an agent."</p>
                 </Show>
@@ -194,7 +218,13 @@ fn render(e: &Entry) -> impl IntoView {
             let text = e.text.clone().unwrap_or_default();
             view! { <pre class="result" class:failed=failed>{text}</pre> }.into_any()
         }
-        _ => view! { <div class="text">{e.text.clone().unwrap_or_default()}</div> }.into_any(),
+        // Prose is markdown — agents write headings, fences and tables, and
+        // raw syntax competes with the content. Tool RESULTS are deliberately
+        // not markdown: they are program output, where whitespace is meaning.
+        _ => {
+            let text = e.text.clone().unwrap_or_default();
+            view! { <div class="text">{crate::markdown::render(&text)}</div> }.into_any()
+        }
     };
     view! { <div class=class>{body}</div> }
 }

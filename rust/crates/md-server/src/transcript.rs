@@ -158,7 +158,8 @@ fn push_entry(rec: &Value, out: &mut Vec<Entry>) {
 
     // A bare string is the plain-prompt shape.
     if let Some(s) = content.and_then(|c| c.as_str()) {
-        if !s.trim().is_empty() {
+        let t = s.trim();
+        if !t.is_empty() && !is_command_wrapper(t) {
             out.push(Entry { text: Some(s.to_string()), ..mk("prompt") });
         }
         return;
@@ -206,6 +207,19 @@ fn push_entry(rec: &Value, out: &mut Vec<Entry>) {
     }
 }
 
+/// A slash command the CLI expanded into an XML wrapper, or the caveat block it
+/// prepends to locally-run command output.
+///
+/// These arrive as `user` records with no meta flag set, so without this they
+/// render exactly as if the person had typed them — which is how `/compact`
+/// ended up looking like a prompt in the conversation view.
+fn is_command_wrapper(text: &str) -> bool {
+    text.starts_with("<command-name>")
+        || text.starts_with("<command-message>")
+        || text.starts_with("<local-command-")
+        || text.starts_with("<user-prompt-submit-hook>")
+}
+
 /// The one argument worth showing beside a tool name.
 ///
 /// Chosen per tool rather than generically: `Bash` is its command, a file tool
@@ -234,7 +248,9 @@ fn headline_arg(tool: &str, input: Option<&Value>) -> Option<String> {
     // Tool lines are one line each; a multi-line command would break the layout
     // and the first line is the identifying part anyway.
     let one_line = arg.lines().next().unwrap_or("").trim().to_string();
-    (!one_line.is_empty()).then(|| truncate_to(&one_line, 160))
+    // Ellipsis, not the multi-line "… truncated" marker: this is rendered inline
+    // beside the tool name, where an injected newline breaks the row.
+    (!one_line.is_empty()).then(|| ellipsis(&one_line, 160))
 }
 
 /// Tool result content is either a string or a block list, depending on the
@@ -249,6 +265,14 @@ fn flatten_result(v: &Value) -> String {
             .join("\n"),
         other => other.to_string(),
     }
+}
+
+/// Shorten to fit on one line. Used where the entry IS a line.
+fn ellipsis(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    s.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
 }
 
 fn truncate(s: &str) -> String {
@@ -381,6 +405,31 @@ mod tests {
         for (tool, input, want) in cases {
             assert_eq!(headline_arg(tool, Some(&input)).as_deref(), want, "{tool} {input}");
         }
+    }
+
+    /// A tool entry is one row, so its argument must not gain a newline.
+    #[test]
+    fn a_long_tool_argument_stays_on_one_line() {
+        let input = json!({ "command": "x".repeat(400) });
+        let arg = headline_arg("Bash", Some(&input)).unwrap();
+        assert!(!arg.contains('\n'), "an inline argument must not wrap");
+        assert!(arg.ends_with('…'));
+        assert_eq!(arg.chars().count(), 160);
+    }
+
+    /// `/compact` and friends arrive as ordinary user records with no meta flag,
+    /// so without filtering they read as something the person typed.
+    #[test]
+    fn slash_command_machinery_is_not_a_prompt() {
+        let out = entries(&[
+            json!({ "type": "user", "message": { "content":
+                "<command-name>/compact</command-name>\n<command-args></command-args>" }}),
+            json!({ "type": "user", "message": { "content":
+                "<local-command-caveat>ignore this</local-command-caveat>" }}),
+            json!({ "type": "user", "message": { "content": "a real question" }}),
+        ]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].text.as_deref(), Some("a real question"));
     }
 
     #[test]

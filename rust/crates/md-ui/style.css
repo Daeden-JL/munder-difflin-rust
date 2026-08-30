@@ -83,6 +83,32 @@ header {
    the main thread. */
 .e.sub { margin-left:1.2rem; opacity:.75 }
 
+/* ── markdown ──────────────────────────────────────────────────────────── */
+.md > * { margin:0 0 .45rem }
+.md > *:last-child { margin-bottom:0 }
+.md p { white-space:pre-wrap }
+.md .h { font-weight:600; color:#e6edf6; margin-top:.6rem }
+.md .h1 { font-size:15px }
+.md .h2 { font-size:14px }
+.md .h3 { font-size:13px; color:var(--dim) }
+.md code { background:#1a212b; padding:0 .28rem; border-radius:3px; color:#a8c7fa }
+.md .code {
+  position:relative; margin:.4rem 0; padding:.55rem .7rem; background:#11161d;
+  border:1px solid var(--line); border-radius:5px; overflow-x:auto;
+}
+.md .code code { background:none; padding:0; color:var(--fg) }
+.md .code .lang {
+  position:absolute; top:.2rem; right:.5rem; font-size:10px; color:var(--dim);
+}
+.md .li { padding-left:.4rem }
+.md .quote { border-left:2px solid var(--line); padding-left:.7rem; color:var(--dim) }
+.md .table {
+  margin:.4rem 0; padding:.5rem .7rem; background:#11161d; border:1px solid var(--line);
+  border-radius:5px; overflow-x:auto; color:var(--dim);
+}
+.md hr { border:0; border-top:1px solid var(--line); margin:.7rem 0 }
+.md .link { color:var(--accent) }
+
 /* ── composer ──────────────────────────────────────────────────────────── */
 .compose { flex:0 0 auto; border-top:1px solid var(--line);
            background:var(--panel); padding:.5rem .75rem .7rem }

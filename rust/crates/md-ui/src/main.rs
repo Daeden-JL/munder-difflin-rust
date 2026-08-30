@@ -6,6 +6,7 @@
 //! them by regexing the TUI's glyphs off the screen.
 
 mod api;
+mod markdown;
 mod transcript;
 
 use leptos::prelude::*;
