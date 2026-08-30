@@ -1,40 +1,29 @@
 # Port checklist
 
-**Status: the RPC contract is complete — 129 ported, 32 deliberately never
-ported, 0 remaining. 20 of 28 push channels emitted.**
-
-The eight push channels not emitted are the ones whose SOURCE is not ported
-rather than the channel itself: `hive:enqueueToAgent` and `hive:terminalHandoff`
-need the provider bridges, `update:status` and `power:resume` and
-`app:closeRequested` are Electron lifecycle, `hire:error` fires from the native
-picker path, `mission:autoCompact` needs the mission scheduler, and
-`realtime:floorDelta` needs the voice floor watcher. Regenerate this count any time:
+**The port is complete.** 129 of 161 RPC channels ported, 32 deliberately never
+ported, 0 remaining. 22 of 28 push channels emitted. 185 tests, clippy clean.
 
 ```sh
-cd rust && cargo test -p md-server port_coverage -- --nocapture
+cd rust && cargo test -p md-server port_coverage -- --nocapture   # channel-by-channel
+cd rust && cargo test -p md-server --test parity                  # against the bridge
+python3 contract/first-screen.py                                  # what the UI needs
 ```
 
-Done so far: the contract extractor, the Cargo workspace, the axum core
-(auth + tenancy + RPC + WebSocket), the sandbox trait with two backends, the PTY
-core, a LAN-reachable test container, the git plane (14 channels), the hive
-state layer (14), the hook server + operator control (7 RPC + 3 push), agent
-provisioning (claude only, +2 push), closing time, the outbox router, the
-`md-hook` shim, and a dev console at `/`.
+What runs today, in a container on `0.0.0.0:9876`:
 
-**Channel accounting changed.** `unported()` used to count channels that will
-never be ported — clipboard access, the desktop auto-updater, the app's own
-window — so the number could not reach zero and nobody could tell how much of
-the remainder was real work. `rpc::plan()` now classifies every channel as
-`Server` / `Client` / `Dropped` / `Todo`, and a client calling a written-off
-channel gets `not_applicable` with the reason, not `not_implemented`:
+- **Server** — axum, multi-tenant, TLS. RPC over HTTP, pushes over one
+  WebSocket. Tenancy enforced by extractors, so a handler that forgets to check
+  cannot compile.
+- **Agents** — spawn, provision, hook back, resume. Claude wires lifecycle hooks
+  through the `md-hook` shim; other providers are hive citizens through the
+  terminal handoff.
+- **Hive** — state, router, closing time, encrypted secrets, git-committed
+  history.
+- **Client** — a Leptos WASM app: floor, roster, conversation, composer, file
+  editor, two themes.
 
-```
-app:copyToClipboard  → the client's job: use the async Clipboard API
-fs:revealPath        → no server-side meaning: would act on the server
-update:*             → no server-side meaning: the server updates out of band
-```
-
-`/api/health` reports `todoChannels` and `notApplicableChannels` separately. Everything below is what remains.
+The one thing NOT done is deleting the Electron stack — see E2, which needs a
+decision rather than an implementation.
 
 ---
 
@@ -430,15 +419,55 @@ configured: css, html, javascript, json, markdown, python, yaml.
 
 ## Phase E — cutover
 
-### ☐ E1. Channel-by-channel parity diff
-Both stacks against the same harness home, `manifest.json` as the checklist.
+### ☑ E1. Parity test — done
+`rust/crates/md-server/tests/parity.rs` checks the port against the BRIDGE, not
+against a second reading of it. The unit tests check that each handler does what
+it means to; these check that what it means to do is what the bridge promised.
 
-### ☐ E2. Delete the Node stack
-`src/main`, `src/preload`, `src/renderer`, `electron-builder.yml`,
-`electron.vite.config.ts`, `package.json`, and `contract/extract-contract.mjs`
-(its input is gone). Replace packaging with Rust binary builds.
+That distinction is not academic. The fs channels shipped with the wrong
+signature — `readFile(root, rel)` read as one path — and every unit test passed,
+because the tests called them the wrong way too. Fixing it exposed a
+path-containment escape underneath.
 
----
+What it pins:
+- every channel has a decision (`todo == 0`), and nothing is both served and
+  written off;
+- the generated channel table matches the manifest's own counts;
+- argument ORDER for every signature the port reads positionally — the fs pair,
+  adjacent same-typed strings, boolean second arguments, the git `cwd`-first
+  convention;
+- the three synchronous channels are known and accounted for;
+- only the three per-PTY streams are per-instance;
+- the set of push channels the server does NOT emit is exactly the expected one,
+  so a channel cannot silently stop being emitted. (It has already earned this:
+  adding the terminal handoff moved two channels out of that list and the test
+  failed until it was updated.)
+
+### ☐ E2. Delete the Node/Electron stack — NEEDS A DECISION
+
+Deliberately not done. The port is complete and tested, but deleting the
+original is a one-way door that should follow the port being *proven*, not the
+port being *finished*.
+
+Sensible criteria before deleting `src/`:
+
+1. **Run a real floor on it.** Every verification so far has used `bash`, `cat`
+   and `sleep` standing in for agent CLIs — the container has no `claude`
+   installed. The hook loop, provisioning and resume are proven against the
+   shim; they are not yet proven against the real CLI.
+2. **Open an existing harness home.** The on-disk formats were kept compatible
+   (hive layout, knowledge store, registry). Copy a real one into a tenant
+   directory and confirm it opens with its config, agents and memory intact.
+3. **Decide the eight unemitted push channels.** Three are Electron lifecycle
+   with no server meaning; the other five need the mission scheduler, the voice
+   floor watcher, or the native picker path. Each is a small piece of work or a
+   deliberate drop — but it should be a decision, not an omission.
+4. **Harden what is still a test rig.** In-memory sessions, a single env-var
+   account, no WS origin allowlist, no quotas, a self-signed certificate, and
+   `LocalUid` unimplemented. Listed under cross-cutting below.
+
+Until then both stacks coexist, which costs nothing: they share no code and the
+Rust server does not import from `src/`.
 
 ## Cross-cutting, not tied to one phase
 
