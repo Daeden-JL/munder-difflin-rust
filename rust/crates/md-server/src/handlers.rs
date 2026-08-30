@@ -1238,11 +1238,7 @@ fn pty_redraw(ctx: &Ctx) -> RpcResponse {
 fn fs_read_binary(ctx: &Ctx) -> RpcResponse {
     let root: String = tri!(ctx.arg(0));
     let rel: String = tri!(ctx.arg(1));
-    let base = tri!(ctx.resolve(&root));
-    let full = tri!(ctx.resolve(&base.join(&rel).display().to_string()));
-    if !full.starts_with(&base) {
-        return RpcResponse::err(ErrorCode::Forbidden, "path escapes the given root");
-    }
+    let full = tri!(resolve_pair(ctx, &root, &rel));
     match std::fs::read(&full) {
         Ok(bytes) => RpcResponse::ok(json!(base64(&bytes))),
         Err(e) => RpcResponse::err(ErrorCode::Internal, e.to_string()),
@@ -1639,8 +1635,11 @@ fn config_update(ctx: &Ctx) -> RpcResponse {
 }
 
 fn fs_list_dir(ctx: &Ctx) -> RpcResponse {
-    let raw: String = tri!(ctx.arg(0));
-    let dir = tri!(ctx.resolve(&raw));
+    let root: String = tri!(ctx.arg(0));
+    // `rel` is optional in practice — a caller listing the root itself passes
+    // only one argument — so an absent second argument means "the root".
+    let rel: String = ctx.opt_arg(1).unwrap_or_default();
+    let dir = tri!(resolve_pair(ctx, &root, &rel));
     let entries = match std::fs::read_dir(&dir) {
         Ok(e) => e,
         Err(e) => return RpcResponse::err(ErrorCode::Internal, e.to_string()),
@@ -1663,7 +1662,9 @@ fn fs_list_dir(ctx: &Ctx) -> RpcResponse {
             a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
         })
     });
-    RpcResponse::ok(out)
+    // The envelope the bridge documents: {ok, entries, path}. A bare array
+    // would make a failure indistinguishable from an empty directory.
+    RpcResponse::ok(json!({ "ok": true, "entries": out, "path": dir }))
 }
 
 fn fs_stat(ctx: &Ctx) -> RpcResponse {
@@ -1678,26 +1679,69 @@ fn fs_stat(ctx: &Ctx) -> RpcResponse {
     }
 }
 
+/// Resolve `.` and `..` without touching the filesystem.
+///
+/// Lexical on purpose, matching the tenant guard: `canonicalize` would follow
+/// symlinks and require the path to exist, and neither is wanted when the
+/// caller may be creating a file.
+fn normalize(p: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Resolve a `(root, rel)` pair.
+///
+/// The fs channels take BOTH, and the pair is the point: `root` is the scope the
+/// caller is browsing and `rel` must stay inside it.
+///
+/// Both sides are NORMALIZED before comparison. `Ctx::resolve` returns the path
+/// as written — it only normalizes internally for its own tenant check — so
+/// comparing its output directly would match `<root>/../../elsewhere` against
+/// `<root>` on the literal prefix and let a tree rooted at one workspace read
+/// the tenant's harness home. That shipped once; hence the test below.
+fn resolve_pair(ctx: &Ctx, root: &str, rel: &str) -> Result<std::path::PathBuf, RpcResponse> {
+    let base = normalize(&ctx.resolve(root)?);
+    let joined = normalize(&ctx.resolve(&base.join(rel).display().to_string())?);
+    if !joined.starts_with(&base) {
+        return Err(RpcResponse::err(ErrorCode::Forbidden, "path escapes the given root"));
+    }
+    Ok(joined)
+}
+
 fn fs_read_file(ctx: &Ctx) -> RpcResponse {
-    let raw: String = tri!(ctx.arg(0));
-    let p = tri!(ctx.resolve(&raw));
+    let root: String = tri!(ctx.arg(0));
+    let rel: String = tri!(ctx.arg(1));
+    let p = tri!(resolve_pair(ctx, &root, &rel));
     match std::fs::read_to_string(&p) {
-        Ok(text) => RpcResponse::ok(json!({ "ok": true, "content": text })),
+        Ok(text) => RpcResponse::ok(json!({
+            "ok": true, "content": text, "path": p, "size": text.len(),
+        })),
         Err(e) => RpcResponse::ok(json!({ "ok": false, "error": e.to_string() })),
     }
 }
 
 fn fs_write_file(ctx: &Ctx) -> RpcResponse {
-    let raw: String = tri!(ctx.arg(0));
-    let content: String = tri!(ctx.arg(1));
-    let p = tri!(ctx.resolve(&raw));
+    let root: String = tri!(ctx.arg(0));
+    let rel: String = tri!(ctx.arg(1));
+    let content: String = tri!(ctx.arg(2));
+    let p = tri!(resolve_pair(ctx, &root, &rel));
     if let Some(dir) = p.parent() {
         if let Err(e) = std::fs::create_dir_all(dir) {
             return RpcResponse::ok(json!({ "ok": false, "error": e.to_string() }));
         }
     }
     match std::fs::write(&p, content) {
-        Ok(()) => RpcResponse::ok(json!({ "ok": true })),
+        Ok(()) => RpcResponse::ok(json!({ "ok": true, "path": p })),
         Err(e) => RpcResponse::ok(json!({ "ok": false, "error": e.to_string() })),
     }
 }
@@ -1881,5 +1925,29 @@ mod tests {
         assert_eq!(expand_tilde("~/proj", &home), home.join("proj"));
         assert_eq!(expand_tilde("proj", &home), home.join("proj"));
         assert_eq!(expand_tilde("/etc/passwd", &home), PathBuf::from("/etc/passwd"));
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::normalize;
+    use std::path::Path;
+
+    /// The escape that shipped: comparing an unnormalized path against its root
+    /// matches on the literal prefix, so `<root>/../..` reads as inside `<root>`.
+    #[test]
+    fn normalizing_before_the_prefix_check_is_what_makes_it_a_check() {
+        let base = Path::new("/home/md/data/dev/workspaces/demo");
+        let escape = base.join("../../.munder-difflin/secrets.json");
+
+        assert!(escape.starts_with(base), "the literal prefix matches — this is the trap");
+        assert!(
+            !normalize(&escape).starts_with(base),
+            "normalized, it is correctly outside the root"
+        );
+
+        let inside = base.join("src/../main.rs");
+        assert!(normalize(&inside).starts_with(base));
+        assert_eq!(normalize(&inside), base.join("main.rs"));
     }
 }

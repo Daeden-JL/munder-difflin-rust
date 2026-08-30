@@ -138,6 +138,48 @@ header {
 .composer button:disabled { opacity:.5; cursor:not-allowed }
 .err { color:var(--err); margin:0 0 .3rem; min-height:1.1em }
 
+/* ── editor ───────────────────────────────────────────────────────────── */
+.editor { flex:1; min-height:0; display:flex; flex-direction:column }
+.ed-bar { display:flex; align-items:center; gap:.5rem; padding:.4rem .7rem;
+          border-bottom:1px solid var(--line); background:var(--panel) }
+.ed-bar .path { flex:1; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.ed-bar button:not(.ghost) {
+  background:var(--accent); border:none; color:#0e1116; font-weight:600;
+  border-radius:4px; padding:.2rem .7rem; cursor:pointer;
+}
+.ed-bar button:disabled { opacity:.45; cursor:default }
+.ed-body { flex:1; min-height:0; display:flex }
+.tree { width:210px; flex:0 0 auto; overflow-y:auto; padding:.35rem;
+        border-right:1px solid var(--line); background:var(--panel) }
+.tree .row { display:block; width:100%; text-align:left; background:none; border:0;
+             color:var(--fg); padding:.2rem .4rem; border-radius:3px; cursor:pointer }
+.tree .row:hover { background:#1a212b }
+.tree .row.dir { color:var(--accent) }
+.pane { flex:1; min-width:0; display:flex; flex-direction:column }
+.warn { margin:0; padding:.4rem .7rem; color:var(--warn); border-bottom:1px solid var(--line) }
+
+/* The highlighted layer and the textarea are stacked and share every metric —
+   font, size, line height, padding, wrapping. Any divergence shows up as
+   colours sliding away from the characters they belong to. */
+.code { position:relative; flex:1; min-height:0; overflow:auto }
+.code .hl, .code textarea {
+  margin:0; padding:.6rem .8rem; border:0; font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space:pre-wrap; word-break:break-word; tab-size:2;
+}
+.code .hl { position:absolute; inset:0; pointer-events:none; overflow:hidden }
+.code textarea {
+  position:relative; width:100%; height:100%; min-height:100%;
+  background:transparent; color:transparent; caret-color:var(--fg); resize:none; outline:none;
+}
+.code textarea::selection { background:#2d4a7a; color:transparent }
+.t-kw  { color:#c792ea }
+.t-str { color:#c3e88d }
+.t-com { color:#5f6b7d; font-style:italic }
+.t-num { color:#f78c6c }
+.t-pun { color:#89ddff }
+.t-pln { color:var(--fg) }
+.ghost.on { border-color:var(--accent); color:var(--accent) }
+
 /* ── login ─────────────────────────────────────────────────────────────── */
 .login {
   max-width:300px; margin:14vh auto; display:flex; flex-direction:column;

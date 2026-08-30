@@ -6,6 +6,7 @@
 //! them by regexing the TUI's glyphs off the screen.
 
 mod api;
+mod editor;
 mod floor;
 mod markdown;
 mod pixel;
@@ -15,6 +16,7 @@ mod transcript;
 use leptos::prelude::*;
 use serde_json::{json, Value};
 
+use editor::Editor;
 use floor::{Floor, Occupant};
 use transcript::Conversation;
 
@@ -55,6 +57,10 @@ fn App() -> impl IntoView {
     // agents look like and nothing else — identity, memory and desk order are
     // bound to the archetype, not the character.
     let theme = RwSignal::new(0usize);
+    // Which pane fills the main area. The floor and the conversation are the
+    // product; files are a tool alongside them.
+    let pane = RwSignal::new("chat".to_string());
+    let root = RwSignal::new("~".to_string());
 
     // A successful authenticated call is the session probe: a cookie from an
     // earlier visit is still good, so a reload does not sign you out.
@@ -154,6 +160,10 @@ fn App() -> impl IntoView {
                     <span class="brand">"munder difflin"</span>
                     <span class="dot" class:on=move || connected.get()></span>
                     <span class="status">{move || status.get()}</span>
+                    <button class="ghost" class:on=move || pane.get() == "chat"
+                            on:click=move |_| pane.set("chat".into())>"chat"</button>
+                    <button class="ghost" class:on=move || pane.get() == "files"
+                            on:click=move |_| pane.set("files".into())>"files"</button>
                     <button class="ghost" on:click=move |_| {
                         leptos::task::spawn_local(async move {
                             let _ = api::rpc("app:startClosingTime", json!([])).await;
@@ -164,7 +174,12 @@ fn App() -> impl IntoView {
                     <Roster agents selected/>
                     <div class="main">
                         <Floor occupants=Signal::derive(move || occupants(agents.get())) theme selected/>
-                        <Conversation agent=selected activity/>
+                        <Show
+                            when=move || pane.get() == "chat"
+                            fallback=move || view! { <Editor root/> }
+                        >
+                            <Conversation agent=selected activity/>
+                        </Show>
                     </div>
                 </div>
             </div>

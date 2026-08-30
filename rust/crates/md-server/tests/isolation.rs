@@ -77,3 +77,30 @@ async fn sandbox_refuses_cross_tenant_spawn() {
     let beta_paths = TenantPaths::new("/srv/md", beta);
     assert!(PassthroughSandbox.resolve(&req, &beta_paths).is_err());
 }
+
+/// The fs channels take `(root, rel)` — BOTH, not one joined path.
+///
+/// This is a parity bug that shipped once: the handlers read only argument 0,
+/// so `readFile(root, "policy.md")` tried to read the directory. It passed
+/// every unit test, because the unit tests called it the wrong way too. The
+/// check that matters is against the bridge's own signature.
+#[test]
+fn the_fs_channels_take_a_root_and_a_relative_path() {
+    let manifest: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../contract/manifest.json")).unwrap();
+
+    let params = |name: &str| -> Vec<String> {
+        manifest["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["name"] == name)
+            .and_then(|m| m["params"].as_array())
+            .map(|ps| ps.iter().filter_map(|p| p["name"].as_str().map(String::from)).collect())
+            .unwrap_or_default()
+    };
+
+    assert_eq!(params("readFile"), ["root", "rel"]);
+    assert_eq!(params("writeFile"), ["root", "rel", "content"]);
+    assert_eq!(params("listDir"), ["root", "rel"]);
+}
