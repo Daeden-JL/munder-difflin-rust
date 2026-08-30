@@ -1,6 +1,6 @@
 # Port checklist
 
-**Status: 67 of 161 RPC channels ported, 20 deliberately never ported, 74 to go.
+**Status: 78 of 161 RPC channels ported, 20 deliberately never ported, 63 to go.
 10 of 28 push channels served.** Regenerate this count any time:
 
 ```sh
@@ -289,6 +289,30 @@ is woken — matching a recorded Electron trace.
 (311), `integrations.ts` (156), `triggerHistory.ts` (153), `github.ts` (122).
 Covers `slack:*` (6), `integrations:*` (6), `webhook(s):*` (10), `skills:*` (5),
 `triggers`/`org`/`missions`/`hire`.
+
+**◐ Partly done.** The registry, the encrypted secret store, provider BYOK keys
+and context triggers are ported. Slack, webhooks, skills, org/missions and
+trigger history remain.
+
+The **secret store** is the load-bearing piece. Electron encrypts at rest via
+`safeStorage` and FAILS CLOSED — no plaintext fallback. There is no OS keychain
+in a container, so the key comes from `MD_SECRET_KEY` and the same rule holds:
+with no key configured, **storing a secret fails**. A server that quietly
+downgraded to plaintext would be worse than one that refuses, because the
+operator would believe the secrets were protected.
+
+XChaCha20-Poly1305, key derived with Argon2. A passphrase under 32 characters is
+refused rather than stretched — Argon2 raises the cost of a guess, it does not
+create entropy that was never there. A wrong key reports failure rather than
+absence, since "no secret stored" would invite overwriting a good one.
+
+Verified live: a `secret` field sent inside a record is dropped rather than
+persisted, `config.json` holds no credential, `secrets.json` is ciphertext at
+mode 0600, and `integrations:list` reports only `hasSecret`.
+
+`integrations:test` refuses a non-https base URL (a credential on a plaintext
+request is a credential on the wire) and follows no redirects (a redirect could
+carry the credential to another host). It returns a status code, never a body.
 
 Preserve the write-only secret contract: secret values never cross the wire, only
 `hasSecret`. It is enforced today in `listRecordsRedacted()` — port the redaction

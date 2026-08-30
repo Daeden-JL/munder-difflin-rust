@@ -191,6 +191,133 @@ pub async fn run(op: Op, ctx: Ctx) -> RpcResponse {
         Op::KgIngestFiles => kg_ingest(&ctx),
         Op::RosterWrite => roster_write(&ctx),
         Op::MemoryReflectNow => memory_reflect(&ctx),
+
+        Op::IntegrationsTemplates => RpcResponse::ok(crate::integrations::templates()),
+        Op::IntegrationsList => RpcResponse::ok(integrations(&ctx).list()),
+        Op::IntegrationsUpsert => {
+            RpcResponse::ok(integrations(&ctx).upsert(&tri!(ctx.arg::<Value>(0))))
+        }
+        Op::IntegrationsRemove => {
+            let req: Value = tri!(ctx.arg(0));
+            RpcResponse::ok(integrations(&ctx).remove(req["id"].as_str().unwrap_or("")))
+        }
+        Op::IntegrationsSetSecret => {
+            let req: Value = tri!(ctx.arg(0));
+            RpcResponse::ok(integrations(&ctx).set_secret(
+                req["id"].as_str().unwrap_or(""),
+                req["secret"].as_str().unwrap_or(""),
+            ))
+        }
+        Op::IntegrationsTest => integrations_test(&ctx).await,
+
+        // Per-CLI BYOK keys. Write-only by the same rule as integration
+        // secrets: `has` returns a boolean and nothing returns the value.
+        Op::ProviderKeySet => {
+            let req: Value = tri!(ctx.arg(0));
+            let backend = req["backend"].as_str().unwrap_or("");
+            let key = req["key"].as_str().unwrap_or("");
+            if backend.is_empty() || key.is_empty() {
+                return RpcResponse::ok(json!({ "ok": false, "error": "backend and key are required" }));
+            }
+            match crate::secrets::Secrets::new(&ctx.paths.harness_home())
+                .set(&format!("provider:{backend}"), key)
+            {
+                Ok(()) => RpcResponse::ok(json!({ "ok": true })),
+                Err(e) => RpcResponse::ok(json!({ "ok": false, "error": e.to_string() })),
+            }
+        }
+        Op::ProviderKeyHas => {
+            let backend: String = tri!(ctx.arg(0));
+            RpcResponse::ok(json!(crate::secrets::Secrets::new(&ctx.paths.harness_home())
+                .has(&format!("provider:{backend}"))))
+        }
+        Op::ProviderKeyClear => {
+            let backend: String = tri!(ctx.arg(0));
+            match crate::secrets::Secrets::new(&ctx.paths.harness_home())
+                .remove(&format!("provider:{backend}"))
+            {
+                Ok(_) => RpcResponse::ok(json!({ "ok": true })),
+                Err(e) => RpcResponse::ok(json!({ "ok": false, "error": e.to_string() })),
+            }
+        }
+
+        Op::TriggersGetContext => {
+            let cfg = read_config(&ctx);
+            RpcResponse::ok(cfg.get("contextTrigger").cloned().unwrap_or_else(|| {
+                json!({ "enabled": false, "thresholdPct": 80, "action": "notify" })
+            }))
+        }
+        Op::TriggersSetContext => {
+            let next: Value = tri!(ctx.arg(0));
+            let mut cfg = read_config(&ctx);
+            cfg["contextTrigger"] = next.clone();
+            match write_config(&ctx, &cfg) {
+                Ok(()) => RpcResponse::ok(next),
+                Err(e) => RpcResponse::err(ErrorCode::Internal, e.to_string()),
+            }
+        }
+    }
+}
+
+fn integrations(ctx: &Ctx) -> crate::integrations::Integrations {
+    crate::integrations::Integrations::new(&ctx.paths.harness_home())
+}
+
+fn read_config(ctx: &Ctx) -> Value {
+    std::fs::read_to_string(ctx.paths.config_file())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}))
+}
+
+fn write_config(ctx: &Ctx, cfg: &Value) -> std::io::Result<()> {
+    let path = ctx.paths.config_file();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(cfg).unwrap_or_default())
+}
+
+/// Make the integration's own test request.
+///
+/// The credential is attached by the registry and never leaves this process in
+/// any other direction — the response carries a status code, not a body, so a
+/// service that echoes its own auth header cannot leak it back to the client.
+async fn integrations_test(ctx: &Ctx) -> RpcResponse {
+    let req: Value = tri!(ctx.arg(0));
+    let id = req["id"].as_str().unwrap_or("");
+    let path = req["path"].as_str();
+
+    let (url, headers) = match integrations(ctx).test_request(id, path) {
+        Ok(v) => v,
+        Err(e) => return RpcResponse::ok(json!({ "ok": false, "error": e })),
+    };
+
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        // No redirects: a redirect could move the request to another host and
+        // carry the credential with it.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map(|c| c.get(&url))
+        .unwrap_or_else(|_| reqwest::Client::new().get(&url));
+    for (k, v) in headers {
+        builder = builder.header(k, v);
+    }
+
+    match builder.send().await {
+        Ok(res) => {
+            let status = res.status().as_u16();
+            RpcResponse::ok(json!({ "ok": res.status().is_success(), "status": status }))
+        }
+        // The error is stringified from the transport, which never contains a
+        // header value — but the URL could contain a query the caller supplied,
+        // so only the class of failure is reported.
+        Err(e) => RpcResponse::ok(json!({
+            "ok": false,
+            "error": if e.is_timeout() { "timed out" } else { "request failed" },
+        })),
     }
 }
 

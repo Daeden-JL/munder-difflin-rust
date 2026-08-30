@@ -50,6 +50,12 @@ fn health_check(bind: &str) -> std::process::ExitCode {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<std::process::ExitCode> {
+    // Choose the rustls crypto provider explicitly. Two crates in this binary
+    // link rustls, so the process-level default is ambiguous and rustls refuses
+    // to guess — it panics at the first handshake, which is to say at runtime.
+    // Installing it here turns that into a startup-time decision.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let bind_env = std::env::var("MD_BIND").unwrap_or_else(|_| "127.0.0.1:7777".into());
     if std::env::args().any(|a| a == "--health-check") {
         return Ok(health_check(&bind_env));

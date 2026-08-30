@@ -22,6 +22,17 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 argon2 = "0.5"
+# Secrets are encrypted at rest. XChaCha20-Poly1305 for the 24-byte nonce:
+# random nonces are safe at this size without tracking a counter.
+chacha20poly1305 = "0.10"
+# Outbound HTTP for integration tests and webhooks. rustls, not the system
+# OpenSSL: the runtime image ships no TLS library.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Pulled in directly so the crypto provider can be chosen EXPLICITLY at startup.
+# With both axum-server and reqwest linking rustls, feature unification leaves
+# two providers available and rustls refuses to guess — it panics at the first
+# TLS handshake, i.e. at runtime, in production.
+rustls = { version = "0.23", features = ["ring"] }
 rand = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
 futures-util = "0.3"

@@ -84,6 +84,17 @@ pub enum Op {
     KgIngestFiles,
     RosterWrite,
     MemoryReflectNow,
+    IntegrationsList,
+    IntegrationsTemplates,
+    IntegrationsUpsert,
+    IntegrationsSetSecret,
+    IntegrationsRemove,
+    IntegrationsTest,
+    ProviderKeySet,
+    ProviderKeyHas,
+    ProviderKeyClear,
+    TriggersGetContext,
+    TriggersSetContext,
 }
 
 /// What this server intends to do about a channel.
@@ -228,6 +239,17 @@ pub const fn handler_for(rpc: Rpc) -> Option<Op> {
         Rpc::KgIngestFiles => Op::KgIngestFiles,
         Rpc::RosterWrite => Op::RosterWrite,
         Rpc::MemoryReflectNow => Op::MemoryReflectNow,
+        Rpc::IntegrationsList => Op::IntegrationsList,
+        Rpc::IntegrationsTemplates => Op::IntegrationsTemplates,
+        Rpc::IntegrationsUpsert => Op::IntegrationsUpsert,
+        Rpc::IntegrationsSetSecret => Op::IntegrationsSetSecret,
+        Rpc::IntegrationsRemove => Op::IntegrationsRemove,
+        Rpc::IntegrationsTest => Op::IntegrationsTest,
+        Rpc::ProviderKeySet => Op::ProviderKeySet,
+        Rpc::ProviderKeyHas => Op::ProviderKeyHas,
+        Rpc::ProviderKeyClear => Op::ProviderKeyClear,
+        Rpc::TriggersGetContext => Op::TriggersGetContext,
+        Rpc::TriggersSetContext => Op::TriggersSetContext,
         _ => return None,
     })
 }
@@ -321,7 +343,7 @@ mod tests {
         for (r, why) in not_applicable() {
             println!("  never {} — {}", r.as_str(), why);
         }
-        assert_eq!(done, 67, "handler count changed; update this number intentionally");
+        assert_eq!(done, 78, "handler count changed; update this number intentionally");
         assert_eq!(done + todo + na, total, "every channel must have exactly one plan");
     }
 
@@ -370,6 +392,7 @@ mod tests {
             Op::AppStartClosingTime, Op::AppCancelClosingTime,
             Op::HiveTextSearch, Op::HistoryAdd, Op::HistoryList, Op::HistorySearch, Op::SessionResolveCwd, Op::PtyRedraw, Op::FsReadBinary, Op::ConfigEnsureHome, Op::ConfigSetAgentTokenCap, Op::AnalyticsMessageSent,
             Op::KgList, Op::KgGet, Op::KgSearch, Op::KgRemove, Op::KgStatus, Op::KgIngestFiles, Op::RosterWrite, Op::MemoryReflectNow,
+            Op::IntegrationsList, Op::IntegrationsTemplates, Op::IntegrationsUpsert, Op::IntegrationsSetSecret, Op::IntegrationsRemove, Op::IntegrationsTest, Op::ProviderKeySet, Op::ProviderKeyHas, Op::ProviderKeyClear, Op::TriggersGetContext, Op::TriggersSetContext,
         ];
         for op in all {
             assert!(ops.contains(&op), "{op:?} is not reachable from any channel");

@@ -31,6 +31,10 @@ services:
       MD_TLS_KEY: "/etc/md/certs/server.key"
       # The built Leptos client. The dev console lives on at /console.html.
       MD_STATIC_DIR: "/srv/web"
+      # Integration secrets are encrypted at rest with a key derived from this.
+      # WITHOUT IT, STORING A SECRET FAILS — the server will not fall back to
+      # plaintext. Generate one with: openssl rand -hex 32
+      MD_SECRET_KEY: "${MD_SECRET_KEY:-}"
       RUST_LOG: "md_server=info,tower_http=info"
     volumes:
       - md-data:/home/md/data
