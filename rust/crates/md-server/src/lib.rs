@@ -11,6 +11,7 @@ pub mod hive;
 pub mod integrations;
 pub mod knowledge;
 pub mod handlers;
+pub mod mcp;
 pub mod misc;
 pub mod realtime;
 pub mod rpc;
@@ -144,6 +145,7 @@ pub async fn build(cfg: &ServerConfig, accounts: Arc<accounts::Accounts>, sandbo
         .route("/api/logout", post(logout))
         .route("/api/health", get(health))
         .route("/api/me", get(me))
+        .route("/api/mcp", get(mcp_catalog))
         // Account management. These name `Admin` in their signatures, so the
         // check is in the type rather than in a middleware someone has to
         // remember to attach.
@@ -433,6 +435,19 @@ async fn me(auth::Auth(session): auth::Auth) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "user": session.user, "tenant": session.tenant.as_str(), "admin": session.admin,
     }))
+}
+
+/// The MCP catalog, with this tenant's consent applied.
+async fn mcp_catalog(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    auth::Tenant(tenant): auth::Tenant,
+) -> Json<serde_json::Value> {
+    let cfg = state
+        .paths(&tenant)
+        .and_then(|p| std::fs::read_to_string(p.config_file()).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    Json(serde_json::json!({ "catalog": mcp::catalog_view(&cfg) }))
 }
 
 async fn accounts_list(

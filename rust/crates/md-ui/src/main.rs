@@ -6,6 +6,7 @@
 //! them by regexing the TUI's glyphs off the screen.
 
 mod api;
+mod config;
 mod editor;
 mod floor;
 mod markdown;
@@ -16,6 +17,7 @@ mod transcript;
 use leptos::prelude::*;
 use serde_json::{json, Value};
 
+use config::Config;
 use editor::Editor;
 use floor::{Floor, Occupant};
 use transcript::Conversation;
@@ -71,6 +73,9 @@ fn App() -> impl IntoView {
     let floor_pct = RwSignal::new(62.0f64);
     // Sidebar width, likewise draggable.
     let side_px = RwSignal::new(230.0f64);
+    let is_admin = RwSignal::new(false);
+    // Bumped by the config panel when it changes something the floor reads.
+    let config_changed = RwSignal::new(0u32);
     let root = RwSignal::new("~".to_string());
     // Derived ONCE and shared: the roster and the floor must not compute this
     // separately, or a face beside a name stops being the figure on the floor.
@@ -89,6 +94,11 @@ fn App() -> impl IntoView {
     // earlier visit is still good, so a reload does not sign you out.
     leptos::task::spawn_local(async move {
         authed.set(api::rpc("app:info", json!([])).await.is_ok());
+        // Restores the admin flag on reload, so a refresh does not hide the
+        // panel from someone who has it.
+        if let Ok(me) = api::get_json("/api/me").await {
+            is_admin.set(me["admin"].as_bool().unwrap_or(false));
+        }
     });
 
     Effect::new(move |_| {
@@ -125,7 +135,7 @@ fn App() -> impl IntoView {
     // registry alone would show agents that died with a crash as if they were
     // running.
     let roster = LocalResource::new(move || {
-        let _ = (activity.get(), authed.get());
+        let _ = (activity.get(), authed.get(), config_changed.get());
         async move {
             let reg = api::rpc("hive:registry", json!([])).await.unwrap_or(Value::Null);
             let live = api::rpc("pty:list", json!([])).await.unwrap_or(Value::Null);
@@ -190,6 +200,8 @@ fn App() -> impl IntoView {
                             on:click=move |_| pane.set("chat".into())>"chat"</button>
                     <button class="ghost" class:on=move || pane.get() == "files"
                             on:click=move |_| pane.set("files".into())>"files"</button>
+                    <button class="ghost" class:on=move || pane.get() == "config"
+                            on:click=move |_| pane.set("config".into())>"setup"</button>
                     <button class="ghost" on:click=move |_| {
                         leptos::task::spawn_local(async move {
                             let _ = api::rpc("app:startClosingTime", json!([])).await;
@@ -215,21 +227,27 @@ fn App() -> impl IntoView {
                                 .and_then(|v| v.as_f64()).unwrap_or(800.0).max(200.0);
                             floor_pct.update(|p| *p = (*p + dy / h * 100.0).clamp(20.0, 85.0));
                         }/>
-                        <Show
-                            when=move || pane.get() == "chat"
-                            fallback=move || view! { <Editor root/> }
-                        >
-                            <Conversation agent=selected activity persona=Signal::derive(move || {
-                                let id = selected.get()?;
-                                let themes = theme::builtin();
-                                let t = themes.get(theme.get() % themes.len().max(1))?;
-                                let arch = archetypes.get().get(&id)?.clone();
-                                Some((
-                                    floor::character_name(t, &arch)?,
-                                    floor::character_trait(t, &arch).unwrap_or_default(),
-                                ))
-                            })/>
-                        </Show>
+                        // Three panels below the floor, one at a time. Match
+                        // on the pane rather than nesting Shows: a nested
+                        // fallback chain reads as a puzzle at the third case.
+                        {move || match pane.get().as_str() {
+                            "files" => view! { <Editor root/> }.into_any(),
+                            "config" => view! {
+                                <Config theme_idx=theme changed=config_changed archetypes is_admin/>
+                            }.into_any(),
+                            _ => view! {
+                                <Conversation agent=selected activity persona=Signal::derive(move || {
+                                    let id = selected.get()?;
+                                    let themes = theme::builtin();
+                                    let t = themes.get(theme.get() % themes.len().max(1))?;
+                                    let arch = archetypes.get().get(&id)?.clone();
+                                    Some((
+                                        floor::character_name(t, &arch)?,
+                                        floor::character_trait(t, &arch).unwrap_or_default(),
+                                    ))
+                                })/>
+                            }.into_any(),
+                        }}
                     </div>
                 </div>
             </div>

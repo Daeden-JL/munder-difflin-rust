@@ -1839,6 +1839,7 @@ fn pty_spawn(ctx: &Ctx) -> RpcResponse {
             hive: &hive,
             hive_root: ctx.paths.hive_root(),
             hook_bin: hook_bin(),
+            config_file: ctx.paths.config_file(),
         };
         let injection = match p.ensure_agent(&m) {
             Ok(i) => i,

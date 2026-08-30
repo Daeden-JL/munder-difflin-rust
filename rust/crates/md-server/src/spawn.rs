@@ -80,6 +80,8 @@ pub struct Provisioner<'a> {
     pub hive_root: PathBuf,
     /// Absolute path to the `md-hook` shim inside the agent's environment.
     pub hook_bin: String,
+    /// The tenant's config, which decides its MCP consent.
+    pub config_file: PathBuf,
 }
 
 impl Provisioner<'_> {
@@ -186,9 +188,15 @@ impl Provisioner<'_> {
         // points every lifecycle hook at the shim, which relays to the socket.
         let settings = dir.join("settings.json");
         if hooked {
+            // The tenant's own config decides which tool servers this agent gets.
+            let config: Value = std::fs::read_to_string(self.config_file.as_path())
+                .ok()
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or_else(|| json!({}));
             std::fs::write(
                 &settings,
-                serde_json::to_vec_pretty(&self.hook_settings()).unwrap_or_default(),
+                serde_json::to_vec_pretty(&self.hook_settings_with(&config, &meta.cwd))
+                    .unwrap_or_default(),
             )
             .map_err(|e| format!("settings.json: {e}"))?;
         }
@@ -284,12 +292,14 @@ impl Provisioner<'_> {
     /// Written per agent and passed with `--settings`, never merged into the
     /// user's `~/.claude` — their own MCP servers and theme are not ours to
     /// touch.
-    fn hook_settings(&self) -> Value {
+    /// The per-session settings that wire Claude Code's hooks to the shim, plus
+    /// the tenant's consented MCP servers for an agent working in `cwd`.
+    fn hook_settings_with(&self, config: &Value, cwd: &str) -> Value {
         let entry = |matcher: Option<&str>| match matcher {
             Some(m) => json!({ "matcher": m, "hooks": [{ "type": "command", "command": self.hook_bin }] }),
             None => json!({ "hooks": [{ "type": "command", "command": self.hook_bin }] }),
         };
-        json!({
+        let mut settings = json!({
             // 'auto', not a pinned light/dark. A pinned value matched the theme at
             // spawn and then ignored every change; 'auto' is the value that
             // listens for the terminal's own theme notifications.
@@ -315,7 +325,17 @@ impl Provisioner<'_> {
                 "PreCompact": [entry(None)],
                 "PostCompact": [entry(None)],
             }
-        })
+        });
+
+        // The tenant's consented MCP servers, written into the PER-SESSION
+        // settings only — never ~/.claude, so a user's own servers are never
+        // clobbered. Omitted entirely when empty, so a file with nothing enabled
+        // is unchanged from before.
+        let mcp = crate::mcp::servers_for(cwd, config);
+        if mcp.as_object().map(|m| !m.is_empty()).unwrap_or(false) {
+            settings["mcpServers"] = mcp;
+        }
+        settings
     }
 
     fn identity_text(&self, meta: &AgentMeta, role: &str) -> String {
@@ -391,7 +411,8 @@ mod tests {
     #[test]
     fn provisioning_creates_the_agent_workspace() {
         let (root, hive) = setup();
-        let p = Provisioner { hive: &hive, hive_root: root.clone(), hook_bin: "/usr/local/bin/md-hook".into() };
+        let p = Provisioner { hive: &hive, hive_root: root.clone(), hook_bin: "/usr/local/bin/md-hook".into(),
+                                  config_file: std::env::temp_dir().join("no-config.json") };
         let inj = p.ensure_agent(&meta("jim")).unwrap();
 
         let dir = root.join("agents/jim");
@@ -412,7 +433,8 @@ mod tests {
     #[test]
     fn a_respawn_preserves_the_session_id_and_unmodelled_fields() {
         let (root, hive) = setup();
-        let p = Provisioner { hive: &hive, hive_root: root, hook_bin: "md-hook".into() };
+        let p = Provisioner { hive: &hive, hive_root: root, hook_bin: "md-hook".into(),
+                                  config_file: std::env::temp_dir().join("no-config.json") };
         p.ensure_agent(&meta("jim")).unwrap();
 
         hive.record_session("jim", "sess-abc");
@@ -443,7 +465,8 @@ mod tests {
     #[test]
     fn a_bad_cwd_is_recorded_rather_than_failing_the_spawn() {
         let (root, hive) = setup();
-        let p = Provisioner { hive: &hive, hive_root: root, hook_bin: "md-hook".into() };
+        let p = Provisioner { hive: &hive, hive_root: root, hook_bin: "md-hook".into(),
+                                  config_file: std::env::temp_dir().join("no-config.json") };
         let mut m = meta("jim");
         m.cwd = "relative/path".into();
 
@@ -463,7 +486,8 @@ mod tests {
     #[test]
     fn a_non_claude_provider_spawns_without_claude_flags() {
         let (root, hive) = setup();
-        let p = Provisioner { hive: &hive, hive_root: root.clone(), hook_bin: "md-hook".into() };
+        let p = Provisioner { hive: &hive, hive_root: root.clone(), hook_bin: "md-hook".into(),
+                                  config_file: std::env::temp_dir().join("no-config.json") };
         let mut m = meta("ryan");
         m.provider = "codex".into();
 
@@ -485,7 +509,8 @@ mod tests {
     #[test]
     fn bootstrapping_twice_does_not_clobber_real_work() {
         let (root, hive) = setup();
-        let p = Provisioner { hive: &hive, hive_root: root.clone(), hook_bin: "md-hook".into() };
+        let p = Provisioner { hive: &hive, hive_root: root.clone(), hook_bin: "md-hook".into(),
+                                  config_file: std::env::temp_dir().join("no-config.json") };
         p.ensure_hive().unwrap();
         std::fs::write(root.join("board.md"), "# real plans").unwrap();
         hive.add_task(json!({ "id": "t1", "title": "real work" }));
@@ -498,7 +523,8 @@ mod tests {
     #[test]
     fn the_socket_is_kept_out_of_the_hive_git_history() {
         let (root, hive) = setup();
-        let p = Provisioner { hive: &hive, hive_root: root.clone(), hook_bin: "md-hook".into() };
+        let p = Provisioner { hive: &hive, hive_root: root.clone(), hook_bin: "md-hook".into(),
+                                  config_file: std::env::temp_dir().join("no-config.json") };
         p.ensure_hive().unwrap();
         p.ensure_hive().unwrap(); // must not duplicate entries
 
@@ -512,8 +538,9 @@ mod tests {
     #[test]
     fn every_lifecycle_hook_points_at_the_shim() {
         let (root, hive) = setup();
-        let p = Provisioner { hive: &hive, hive_root: root, hook_bin: "/usr/local/bin/md-hook".into() };
-        let s = p.hook_settings();
+        let p = Provisioner { hive: &hive, hive_root: root, hook_bin: "/usr/local/bin/md-hook".into(),
+                                  config_file: std::env::temp_dir().join("no-config.json") };
+        let s = p.hook_settings_with(&json!({}), "/w");
 
         for h in ["Stop", "SubagentStop", "PreToolUse", "PostToolUse", "UserPromptSubmit",
                   "Notification", "SessionStart", "PreCompact", "PostCompact"] {

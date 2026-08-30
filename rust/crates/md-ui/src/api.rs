@@ -49,6 +49,20 @@ pub async fn get_json(path: &str) -> Result<Value, String> {
         .map_err(|e| e.to_string())
 }
 
+/// POST JSON to a web-native endpoint and read the JSON back.
+pub async fn post_json(path: &str, body: &serde_json::Value) -> Result<Value, String> {
+    Request::post(path)
+        .credentials(web_sys::RequestCredentials::SameOrigin)
+        .json(body)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())
+}
+
 pub async fn login(user: &str, password: &str) -> Result<(), String> {
     let res = Request::post("/api/login")
         .credentials(web_sys::RequestCredentials::SameOrigin)
