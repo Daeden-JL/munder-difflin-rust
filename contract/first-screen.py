@@ -55,7 +55,18 @@ PUSH_RE = re.compile(r"Push::(\w+)")
 def ported_channels(by_variant):
     if not RPC_RS.exists():
         sys.exit(f"missing {RPC_RS}")
-    served = {v for v in VARIANT_RE.findall(RPC_RS.read_text())}
+    src = RPC_RS.read_text()
+    served = set(VARIANT_RE.findall(src))
+
+    # Channels the server deliberately will NOT port (clipboard, the desktop
+    # updater, the app's own window) are resolved, not pending. Counted as gaps
+    # they would keep the number from ever reaching zero and hide the real work.
+    # Read from the `plan` function's own arms, so this cannot drift from it.
+    head, _, rest = src.partition("pub const fn plan(")
+    never_region, _, _ = rest.partition("other => match handler_for")
+    served |= set(re.findall(r"Rpc::(\w+)", never_region))
+    del head
+
     # A push channel counts as served where the server emits it. `.as_str()` and
     # the enum definition itself are not emissions, so skip the contract crate.
     for f in SERVER_SRC.rglob("*.rs"):
@@ -93,7 +104,7 @@ def main():
     core = channels(methods_in(SRC / f for f in MAIN_SCREEN))
     whole = channels(methods_in(p for p in SRC.rglob("*") if p.suffix in (".ts", ".tsx")))
 
-    print(f"ported                 : {len(ported)} channels")
+    print(f"resolved (done+never)  : {len(ported)} channels")
     print(f"main screen needs      : {len(core)} channels, {len(core - ported)} unported")
     print(f"whole renderer needs   : {len(whole)} channels, {len(whole - ported)} unported")
     print("\nmain-screen gap by namespace:")

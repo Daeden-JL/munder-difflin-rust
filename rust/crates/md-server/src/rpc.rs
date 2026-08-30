@@ -64,11 +64,80 @@ pub enum Op {
     ControlSnapshot,
     ControlAutoDelivery,
     ControlGateTool,
+    AppStartClosingTime,
+    AppCancelClosingTime,
 }
 
-/// The single channel-to-implementation mapping. `None` means "not ported yet",
-/// which is deliberately distinct from "no such channel": the client can tell a
-/// typo from a gap, and so can the coverage report.
+/// What this server intends to do about a channel.
+///
+/// Without this, `unported()` counts channels that will NEVER be ported —
+/// clipboard access, the desktop auto-updater, the app's own window — so the
+/// coverage number can never reach 100% and nobody can tell how much of the
+/// remainder is real work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Plan {
+    /// Implemented here.
+    Server(Op),
+    /// The browser's job. The server has no part in it, so a client that calls
+    /// this has a bug: it should be using the platform API directly.
+    Client(&'static str),
+    /// Electron-only capability with no meaning for a remote tenant.
+    Dropped(&'static str),
+    /// Real work, still to do.
+    Todo,
+}
+
+/// The single channel-to-plan mapping. Everything else — dispatch, the coverage
+/// report, the error a client sees — reads this one function.
+pub const fn plan(rpc: Rpc) -> Plan {
+    use Plan::{Client, Dropped};
+    match rpc {
+        // ── The browser's job ────────────────────────────────────────────────
+        // The async Clipboard API covers these. `readClipboardSync` cannot be
+        // ported at all — a web client cannot block on a round trip — but the
+        // browser's own paste event carries the text synchronously, which is
+        // actually better than what it replaces.
+        Rpc::AppCopyToClipboard | Rpc::AppReadClipboard | Rpc::AppReadClipboardSync => {
+            Client("use the async Clipboard API; paste events carry text synchronously")
+        }
+        Rpc::ClipboardSaveImage => Client("write the image with the Clipboard API"),
+        Rpc::AppOpenExternal => Client("a plain link opens it"),
+        Rpc::AppSetNotifications => Client("the Web Notifications permission is the browser's"),
+        // A native picker cannot reach the server's filesystem, and a browser
+        // never learns a dropped file's real path. Choosing a server directory
+        // needs a server-side browser built on `fs:listDir`; attaching a local
+        // file becomes an upload.
+        Rpc::DialogChooseFolder => Client("browse the server with fs:listDir"),
+        Rpc::DialogAttachFiles => Client("upload the file instead — a browser has no real path"),
+
+        // ── No meaning for a remote tenant ───────────────────────────────────
+        // There is no window to close, and closing a tab must not stop the
+        // tenant's agents. The graceful path is closing time, which is ported.
+        Rpc::AppConfirmClose | Rpc::AppCancelClose => {
+            Dropped("no window to close; use closing time to wind the floor down")
+        }
+        Rpc::AppSetLoginItem => Dropped("no desktop app to launch at login"),
+        // These act on the SERVER's machine, which is not the tenant's.
+        Rpc::FsRevealPath => Dropped("reveal-in-file-manager would act on the server"),
+        Rpc::TerminalOpenAtFolder => Dropped("open-in-terminal would act on the server"),
+        // electron-updater is gone. The server updates out of band; the client
+        // needs at most a "reload, the server changed" signal.
+        Rpc::UpdateCheckNow
+        | Rpc::UpdateCurrent
+        | Rpc::UpdateDownload
+        | Rpc::UpdateOpenRelease
+        | Rpc::UpdateRestartAndInstall
+        | Rpc::UpdateSimulate => Dropped("the server updates out of band"),
+
+        other => match handler_for(other) {
+            Some(op) => Plan::Server(op),
+            None => Plan::Todo,
+        },
+    }
+}
+
+/// The channel-to-implementation mapping. `None` means "no handler", which
+/// `plan` refines into "todo" versus "never".
 pub const fn handler_for(rpc: Rpc) -> Option<Op> {
     Some(match rpc {
         Rpc::AppInfo => Op::AppInfo,
@@ -118,13 +187,29 @@ pub const fn handler_for(rpc: Rpc) -> Option<Op> {
         Rpc::ControlSnapshot => Op::ControlSnapshot,
         Rpc::ControlAutoDelivery => Op::ControlAutoDelivery,
         Rpc::ControlGateTool => Op::ControlGateTool,
+        Rpc::AppStartClosingTime => Op::AppStartClosingTime,
+        Rpc::AppCancelClosingTime => Op::AppCancelClosingTime,
         _ => return None,
     })
 }
 
-/// Channels with no handler yet — the remaining port work, in one list.
+/// Channels that are real remaining work. Excludes the ones that will never be
+/// ported, so this number can actually reach zero.
 pub fn unported() -> Vec<Rpc> {
-    Rpc::ALL.iter().copied().filter(|r| handler_for(*r).is_none()).collect()
+    Rpc::ALL.iter().copied().filter(|r| plan(*r) == Plan::Todo).collect()
+}
+
+/// Channels deliberately not ported, with the reason. Reported by `/api/health`
+/// so the remainder is legible without reading this file.
+pub fn not_applicable() -> Vec<(Rpc, &'static str)> {
+    Rpc::ALL
+        .iter()
+        .copied()
+        .filter_map(|r| match plan(r) {
+            Plan::Client(why) | Plan::Dropped(why) => Some((r, why)),
+            _ => None,
+        })
+        .collect()
 }
 
 pub async fn rpc_handler(
@@ -140,11 +225,28 @@ pub async fn rpc_handler(
         ));
     };
 
-    let Some(op) = handler_for(rpc) else {
-        return Json(RpcResponse::err(
-            ErrorCode::NotImplemented,
-            format!("{channel} is not ported yet (bridge method `{}`)", rpc.bridge_method()),
-        ));
+    let op = match plan(rpc) {
+        Plan::Server(op) => op,
+        Plan::Todo => {
+            return Json(RpcResponse::err(
+                ErrorCode::NotImplemented,
+                format!("{channel} is not ported yet (bridge method `{}`)", rpc.bridge_method()),
+            ))
+        }
+        // A client calling one of these has a bug — the answer tells it what to
+        // do instead, rather than looking like a gap that will close later.
+        Plan::Client(why) => {
+            return Json(RpcResponse::err(
+                ErrorCode::NotApplicable,
+                format!("{channel} is the client's job: {why}"),
+            ))
+        }
+        Plan::Dropped(why) => {
+            return Json(RpcResponse::err(
+                ErrorCode::NotApplicable,
+                format!("{channel} has no server-side meaning: {why}"),
+            ))
+        }
     };
 
     let Some(paths) = state.paths(&tenant).cloned() else {
@@ -170,12 +272,41 @@ mod tests {
     #[test]
     fn port_coverage() {
         let total = Rpc::ALL.len();
-        let done = total - unported().len();
-        println!("ported {done}/{total} RPC channels");
+        let na = not_applicable().len();
+        let todo = unported().len();
+        let done = total - todo - na;
+        println!("ported {done}/{total}  |  todo {todo}  |  never {na}");
         for r in unported() {
             println!("  todo {} ({})", r.as_str(), r.bridge_method());
         }
-        assert_eq!(done, 47, "handler count changed; update this number intentionally");
+        for (r, why) in not_applicable() {
+            println!("  never {} — {}", r.as_str(), why);
+        }
+        assert_eq!(done, 49, "handler count changed; update this number intentionally");
+        assert_eq!(done + todo + na, total, "every channel must have exactly one plan");
+    }
+
+    /// A channel classified as never-ported must not also have a handler: that
+    /// would mean the dispatcher refuses a channel this server can actually
+    /// serve, and the refusal would be invisible until someone called it.
+    #[test]
+    fn nothing_is_both_implemented_and_written_off() {
+        for (r, _) in not_applicable() {
+            assert!(
+                handler_for(r).is_none(),
+                "{} has a handler but is classified as not-applicable",
+                r.as_str()
+            );
+        }
+    }
+
+    /// The reasons are shown to clients, so an empty one is a broken message.
+    #[test]
+    fn every_written_off_channel_says_why() {
+        for (r, why) in not_applicable() {
+            assert!(!why.is_empty(), "{} has no reason", r.as_str());
+        }
+        assert!(!not_applicable().is_empty(), "the classification is wired up");
     }
 
     /// A channel must never map to two operations, and every op must be
@@ -197,6 +328,7 @@ mod tests {
             Op::HiveSetArchived, Op::HiveSetAgentHold, Op::HiveSend,
             Op::ControlPause, Op::ControlResume, Op::ControlHalt, Op::ControlSteer,
             Op::ControlSnapshot, Op::ControlAutoDelivery, Op::ControlGateTool,
+            Op::AppStartClosingTime, Op::AppCancelClosingTime,
         ];
         for op in all {
             assert!(ops.contains(&op), "{op:?} is not reachable from any channel");

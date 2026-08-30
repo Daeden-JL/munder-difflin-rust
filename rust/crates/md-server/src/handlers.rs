@@ -132,7 +132,114 @@ pub async fn run(op: Op, ctx: Ctx) -> RpcResponse {
         | Op::ControlSnapshot
         | Op::ControlAutoDelivery
         | Op::ControlGateTool => control_op(op, &ctx),
+
+        Op::AppStartClosingTime => closing_start(&ctx),
+        Op::AppCancelClosingTime => closing_cancel(&ctx),
     }
+}
+
+/// Agents with a PTY right now. The registry is not a substitute: an agent that
+/// died with a crash keeps its record without ever being archived, so a
+/// registry-based roster waits forever on something that can never answer.
+fn live_agents(ctx: &Ctx) -> Vec<String> {
+    ctx.state
+        .pty
+        .list(&ctx.tenant)
+        .into_iter()
+        .map(|s| s.id)
+        .collect()
+}
+
+fn publish_progress(ctx: &Ctx, p: &crate::closing::Progress) {
+    ctx.state.hub.publish(
+        &ctx.tenant,
+        md_contract::ServerEvent::new(md_contract::Push::AppClosingTime, p),
+    );
+}
+
+/// Perform whatever the controller decided. Kept here rather than inside
+/// `closing` so that module stays testable without a hive or a pty manager.
+fn apply(ctx: &Ctx, action: crate::closing::Action) {
+    use crate::closing::Action;
+    match action {
+        Action::None => {}
+        // Sent as the human: closing time is the human's instruction, and the
+        // god's inbox should show it as such.
+        Action::Tell(msg) => {
+            hive::Hive::new(ctx.paths.hive_root()).send(&msg, "human");
+        }
+        Action::Conclude => {
+            let state = ctx.state.clone();
+            let tenant = ctx.tenant.clone();
+            let closing = ctx.state.closing(&tenant);
+            let generation = closing.generation();
+            tokio::spawn(async move {
+                // The grace lets the god's final commit and log writes land, so
+                // the floor visibly concludes instead of vanishing mid-sentence.
+                tokio::time::sleep(crate::closing::Closing::teardown_grace()).await;
+                if !closing.finish(generation) {
+                    return; // cancelled or superseded while we waited
+                }
+                // This tenant's floor only. In Electron the protocol ended in
+                // app.quit(); here that would take every other tenant down too.
+                for s in state.pty.list(&tenant) {
+                    let _ = state.pty.kill(&s.id, &tenant);
+                }
+                tracing::info!(%tenant, "closing time complete — floor wound down");
+            });
+        }
+    }
+}
+
+fn closing_start(ctx: &Ctx) -> RpcResponse {
+    let hive = hive::Hive::new(ctx.paths.hive_root());
+    let closing = ctx.state.closing(&ctx.tenant);
+    let started = match closing.start(&hive.registry(), &live_agents(ctx)) {
+        Ok(v) => v,
+        // A refusal is a value, not a transport error: the UI falls back to a
+        // hard close and needs the reason to say why.
+        Err(e) => return RpcResponse::ok(json!({ "ok": false, "error": e })),
+    };
+
+    // Steer notes reach agents that are deeply busy: the inbox brief only lands
+    // when one next stops, so a worker hours into a task would hold the whole
+    // shutdown.
+    let control = ctx.state.control(&ctx.tenant);
+    for s in started.steers {
+        control.steer(&s.agent, &s.note);
+    }
+    apply(ctx, started.action);
+    publish_progress(ctx, &started.progress);
+
+    // Arm the "taking a while" notice. It reports; it never tears anything down.
+    let generation = closing.generation();
+    let (state, tenant) = (ctx.state.clone(), ctx.tenant.clone());
+    tokio::spawn(async move {
+        tokio::time::sleep(crate::closing::Closing::timeout()).await;
+        if let Some(p) = state.closing(&tenant).timed_out(generation) {
+            state.hub.publish(
+                &tenant,
+                md_contract::ServerEvent::new(md_contract::Push::AppClosingTime, p),
+            );
+        }
+    });
+
+    RpcResponse::ok(json!({ "ok": true }))
+}
+
+fn closing_cancel(ctx: &Ctx) -> RpcResponse {
+    let Some(cancelled) = ctx.state.closing(&ctx.tenant).cancel() else {
+        return RpcResponse::ok(json!({ "ok": true }));
+    };
+    // Drop steers no hook boundary has consumed yet, so a busy agent is not
+    // told to shut down after the human cancelled.
+    let control = ctx.state.control(&ctx.tenant);
+    for id in cancelled.clear {
+        control.clear_steers(&id);
+    }
+    apply(ctx, cancelled.action);
+    publish_progress(ctx, &cancelled.progress);
+    RpcResponse::ok(json!({ "ok": true }))
 }
 
 /// Each control channel answers with the agent's FULL snapshot rather than an
@@ -193,10 +300,29 @@ fn hive_op(op: Op, ctx: &Ctx) -> RpcResponse {
         Op::HiveSetAgentHold => h.set_agent_hold(&tri!(ctx.arg::<String>(0)), tri!(ctx.arg::<bool>(1))),
         // `from` defaults to 'system'; the renderer passes 'human' for anything a
         // person dispatched, which is what the analytics counter keys on.
-        Op::HiveSend => h.send(
-            &tri!(ctx.arg::<Value>(0)),
-            &ctx.opt_arg::<String>(1).unwrap_or_else(|| "system".into()),
-        ),
+        Op::HiveSend => {
+            let out = h.send(
+                &tri!(ctx.arg::<Value>(0)),
+                &ctx.opt_arg::<String>(1).unwrap_or_else(|| "system".into()),
+            );
+            // Closing time watches routed traffic for ACKs and the god's
+            // conclusion. It reads `delivered`, not the intended recipient: an
+            // ACK that never reached the god has not happened.
+            let delivered: Vec<String> = out["delivered"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            if let Some((progress, action)) = ctx.state.closing(&ctx.tenant).on_routed(
+                &out["message"],
+                &delivered,
+                &h.registry(),
+                &live_agents(ctx),
+            ) {
+                apply(ctx, action);
+                publish_progress(ctx, &progress);
+            }
+            out
+        }
         _ => unreachable!("hive_op called with a non-hive op"),
     })
 }

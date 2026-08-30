@@ -1,6 +1,7 @@
 //! Munder Difflin server: the Rust replacement for the Electron main process.
 
 pub mod auth;
+pub mod closing;
 pub mod control;
 pub mod git;
 pub mod hooks;
@@ -50,6 +51,10 @@ pub async fn build(cfg: &ServerConfig, accounts: Vec<Account>, sandbox: Arc<dyn 
         .keys()
         .map(|t| (t.clone(), Arc::new(control::Control::new())))
         .collect();
+    let closing: HashMap<TenantId, Arc<closing::Closing>> = tenants
+        .keys()
+        .map(|t| (t.clone(), Arc::new(closing::Closing::new())))
+        .collect();
 
     let state = AppState {
         sessions: SessionStore::new(),
@@ -59,6 +64,7 @@ pub async fn build(cfg: &ServerConfig, accounts: Vec<Account>, sandbox: Arc<dyn 
         hub: Hub::new(),
         sandbox,
         control: Arc::new(control),
+        closing: Arc::new(closing),
     };
 
     // One hook listener per tenant, inside that tenant's own hive directory.
@@ -100,8 +106,12 @@ async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "ok": true,
         "version": env!("CARGO_PKG_VERSION"),
-        "portedChannels": md_contract::Rpc::ALL.len() - rpc::unported().len(),
+        "portedChannels": md_contract::Rpc::ALL.len() - rpc::unported().len() - rpc::not_applicable().len(),
         "totalChannels": md_contract::Rpc::ALL.len(),
+        // Split out so "what is left" is real work, not padded with channels
+        // that will never be ported.
+        "todoChannels": rpc::unported().len(),
+        "notApplicableChannels": rpc::not_applicable().len(),
     }))
 }
 

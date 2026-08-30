@@ -1,6 +1,7 @@
 # Port checklist
 
-**Status: 47 of 161 RPC channels + 8 of 28 push channels served.** Regenerate this count any time:
+**Status: 49 of 161 RPC channels ported, 19 deliberately never ported, 93 to go.
+9 of 28 push channels served.** Regenerate this count any time:
 
 ```sh
 cd rust && cargo test -p md-server port_coverage -- --nocapture
@@ -10,17 +11,32 @@ Done so far: the contract extractor, the Cargo workspace, the axum core
 (auth + tenancy + RPC + WebSocket), the sandbox trait with two backends, the PTY
 core, a LAN-reachable test container, the git plane (14 channels), the hive
 state layer (14), the hook server + operator control (7 RPC + 3 push), agent
-provisioning (claude only, +2 push), the `md-hook` shim, and a dev console at
-`/`. Everything below is what remains.
+provisioning (claude only, +2 push), closing time, the `md-hook` shim, and a dev
+console at `/`.
+
+**Channel accounting changed.** `unported()` used to count channels that will
+never be ported — clipboard access, the desktop auto-updater, the app's own
+window — so the number could not reach zero and nobody could tell how much of
+the remainder was real work. `rpc::plan()` now classifies every channel as
+`Server` / `Client` / `Dropped` / `Todo`, and a client calling a written-off
+channel gets `not_applicable` with the reason, not `not_implemented`:
+
+```
+app:copyToClipboard  → the client's job: use the async Clipboard API
+fs:revealPath        → no server-side meaning: would act on the server
+update:*             → no server-side meaning: the server updates out of band
+```
+
+`/api/health` reports `todoChannels` and `notApplicableChannels` separately. Everything below is what remains.
 
 ---
 
 ## How much until it looks like the desktop app?
 
-Not 161 channels — **37**. That is the unported set reachable from the main
+Not 161 channels — **24**. That is the unported set reachable from the main
 screen's own call sites (`App`, the store, `useHive`, `AgentStrip`, `AgentCard`,
 `CommandCenterPanel`, `OfficeFloor`, the composer, the pty views), as opposed to
-97 unported across the whole renderer including every modal and settings tab.
+76 unported across the whole renderer including every modal and settings tab.
 
 Measured, not estimated:
 
@@ -32,15 +48,13 @@ The gap is dominated by one namespace:
 
 | namespace | unported | what it blocks |
 |---|---|---|
-| `app:` | 10 | mostly Electron-native; see `contract/PORTING-NOTES.md` |
 | `hive:` | 6 | 3 search, 2 router pushes, 1 terminal handoff |
 | `hire:` | 3 | agent creation |
-| everything else | 18 | thirteen namespaces, 1–2 channels each |
+| everything else | 15 | nine namespaces, 1–2 channels each |
 
-The floor can be drawn, it updates itself, and agents can be spawned into it.
-`app:` is now the largest block and is mostly *not* work — see
-`contract/PORTING-NOTES.md`, where each Electron-native channel already has a
-browser substitute or is deleted outright.
+The floor can be drawn, it updates itself, agents can be spawned into it, and it
+can be wound down gracefully. What is left is a long tail: no single namespace
+now accounts for more than a quarter of it.
 
 ---
 
@@ -164,6 +178,37 @@ Rules worth keeping when this is extended:
   nothing behind. (Electron provisions first and leaves a registry entry for an
   agent that never started; the lookup does not need that order, because
   `sessionId` is only ever written by the hook server.)
+
+### ☑ C5. Electron-native surface — resolved as 19 written-off channels
+Not ported, deliberately, each with a reason in `rpc::plan()`. Seven are the
+browser's job (clipboard ×4, `openExternal`, notifications, the two file
+pickers); twelve have no meaning for a remote tenant (the app's own window,
+login item, reveal-in-file-manager, open-in-terminal, and the six
+`electron-updater` channels).
+
+The one piece of real product behaviour in that group was **closing time**, and
+it is ported. It is the graceful, data-loss-free shutdown: the human announces
+it, every worker parks its work and appends state to `memory.md`, the god
+collects the ACKs and concludes.
+
+**Behaviour change, on purpose.** In Electron the protocol ended in `app.quit()`.
+Here that would take every other tenant's floor down with it, so conclusion kills
+**this tenant's** PTY sessions and nothing else. It follows that closing a
+browser tab must not start this — a tenant's agents keep running until someone
+deliberately closes the floor.
+
+Two rules the original earned and this keeps:
+- Only agents with a LIVE pty are waited on. The registry keeps records for
+  agents that died with a crash, so a registry-based roster waits forever on
+  something that can never ACK.
+- A premature `CLOSING-TIME-COMPLETE` is REJECTED, with the missing workers
+  named. The god is told to wait for every ACK, but the entire point is that no
+  worker loses unsaved state, so the harness verifies independently. A worker
+  whose terminal died mid-protocol is excused — its ACK can never arrive.
+
+Steer notes carry the announcement to deeply busy agents, since the inbox brief
+only lands when one next stops; a worker hours into a task would otherwise hold
+the whole shutdown.
 
 **☐ C3d. Remaining hive — 6 channels + the other providers.**
 1. Provider bridges: `agy`, `codex`, `pi` (config-file hook shims) and the

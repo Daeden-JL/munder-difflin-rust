@@ -57,6 +57,13 @@ pub enum ErrorCode {
     /// Channel exists but this build has no handler for it. Distinct from
     /// `UnknownChannel` so parity tooling can tell "missing" from "misspelled".
     NotImplemented,
+    /// The channel exists in the Electron contract but has no server-side
+    /// meaning here, and never will: it is either the browser's job (clipboard,
+    /// opening a link) or an Electron-only capability (the app's own window, the
+    /// desktop auto-updater). Distinct from `NotImplemented` so "still to do" and
+    /// "never" do not sit in the same bucket — otherwise port progress can never
+    /// reach 100%% and nobody can tell why.
+    NotApplicable,
     Unauthenticated,
     /// Authenticated, but not for this tenant's resource.
     Forbidden,

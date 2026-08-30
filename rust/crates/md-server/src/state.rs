@@ -9,6 +9,7 @@ use md_pty::PtyManager;
 use md_tenant::{Sandbox, TenantId, TenantPaths};
 
 use crate::auth::{Account, SessionStore};
+use crate::closing::Closing;
 use crate::control::Control;
 use crate::ws::Hub;
 
@@ -23,6 +24,9 @@ pub struct AppState {
     /// Operator control state, per tenant. In memory because it describes agents
     /// that are running now — it is meaningless across a restart that took them.
     pub control: Arc<HashMap<TenantId, Arc<Control>>>,
+    /// Closing-time state, per tenant. Winding down one tenant's floor must
+    /// never touch another's.
+    pub closing: Arc<HashMap<TenantId, Arc<Closing>>>,
 }
 
 impl AppState {
@@ -33,6 +37,10 @@ impl AppState {
     /// Every provisioned tenant has a registry, so this cannot legitimately miss.
     pub fn control(&self, tenant: &TenantId) -> Arc<Control> {
         self.control.get(tenant).cloned().unwrap_or_default()
+    }
+
+    pub fn closing(&self, tenant: &TenantId) -> Arc<Closing> {
+        self.closing.get(tenant).cloned().unwrap_or_default()
     }
 }
 
