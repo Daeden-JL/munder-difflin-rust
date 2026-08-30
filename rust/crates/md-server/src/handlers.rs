@@ -1509,9 +1509,34 @@ fn hive_op(op: Op, ctx: &Ctx) -> RpcResponse {
         // `from` defaults to 'system'; the renderer passes 'human' for anything a
         // person dispatched, which is what the analytics counter keys on.
         Op::HiveSend => {
-            let out = h.send(
+            // The handoff writes into the target's live pty. Announced too, so
+            // the floor shows work reaching an agent that has no inbox — it
+            // would otherwise look like the message vanished.
+            let (state, tenant) = (ctx.state.clone(), ctx.tenant.clone());
+            let out = h.send_offering_handoff(
                 &tri!(ctx.arg::<Value>(0)),
                 &ctx.opt_arg::<String>(1).unwrap_or_else(|| "system".into()),
+                &mut |o| {
+                    let typed = format!("{}\r", o.text);
+                    let ok = state.pty.write(&o.target, &tenant, &typed).is_ok();
+                    if ok {
+                        state.hub.publish(
+                            &tenant,
+                            md_contract::ServerEvent::new(
+                                md_contract::Push::HiveTerminalHandoff,
+                                json!({ "targetId": o.target, "text": o.text }),
+                            ),
+                        );
+                        state.hub.publish(
+                            &tenant,
+                            md_contract::ServerEvent::new(
+                                md_contract::Push::HiveEnqueueToAgent,
+                                json!({ "targetId": o.target, "text": o.text }),
+                            ),
+                        );
+                    }
+                    ok
+                },
             );
             // Closing time watches routed traffic for ACKs and the god's
             // conclusion. It reads `delivered`, not the intended recipient: an

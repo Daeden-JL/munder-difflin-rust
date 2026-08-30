@@ -130,13 +130,13 @@ impl Provisioner<'_> {
     /// Safe to call on every spawn: identity is refreshed, memory is seeded only
     /// once, and the registry entry is merged rather than replaced.
     pub fn ensure_agent(&self, meta: &AgentMeta) -> Result<Injection, String> {
-        if meta.provider != "claude" {
-            return Err(format!(
-                "provider '{}' is not ported — only 'claude' wires hooks today, and \
-                 spawning without them would look live but be invisible to the floor",
-                meta.provider
-            ));
-        }
+        // Non-Claude providers spawn, but without hook wiring: their lifecycle
+        // shims (agy, codex, pi) and the qwen proxy sidecar are not ported. They
+        // are hive citizens through the TERMINAL HANDOFF instead — mail typed
+        // into their REPL — which is the same path the original uses for a
+        // hookless CLI. Refusing them outright, as this did, kept a working
+        // delivery route unavailable for want of an unrelated bridge.
+        let hooked = meta.provider == "claude";
         if meta.id.trim().is_empty() {
             return Err("agent needs an id".into());
         }
@@ -182,14 +182,16 @@ impl Provisioner<'_> {
         let (cwd_valid, issue) = cwd_validity(&meta.cwd);
         self.upsert_registry(meta, &role, cwd_valid, issue);
 
-        // The settings file is what actually makes the agent report to the floor:
-        // it points every lifecycle hook at the shim, which relays to the socket.
+        // The settings file is what makes a Claude agent report to the floor: it
+        // points every lifecycle hook at the shim, which relays to the socket.
         let settings = dir.join("settings.json");
-        std::fs::write(
-            &settings,
-            serde_json::to_vec_pretty(&self.hook_settings()).unwrap_or_default(),
-        )
-        .map_err(|e| format!("settings.json: {e}"))?;
+        if hooked {
+            std::fs::write(
+                &settings,
+                serde_json::to_vec_pretty(&self.hook_settings()).unwrap_or_default(),
+            )
+            .map_err(|e| format!("settings.json: {e}"))?;
+        }
 
         let mut env = BTreeMap::new();
         env.insert("AGENT_ID".into(), meta.id.clone());
@@ -204,17 +206,24 @@ impl Provisioner<'_> {
             self.hive_root.join("hooks.sock").display().to_string(),
         );
 
-        Ok(Injection {
-            args: vec![
+        // Claude takes its identity on a flag; a CLI that does not understand
+        // Claude's flags gets nothing on argv, and receives the same identity
+        // through the terminal handoff instead. Passing an unknown flag would
+        // make the process exit before it started.
+        let args = if hooked {
+            vec![
                 "--append-system-prompt".into(),
                 self.injected_prompt(meta, &dir),
                 // `--settings` rather than editing the user's own config: the
                 // harness must never mutate files in the user's repo or home.
                 "--settings".into(),
                 settings.display().to_string(),
-            ],
-            env,
-        })
+            ]
+        } else {
+            vec![]
+        };
+
+        Ok(Injection { args, env })
     }
 
     /// Merge the agent into the registry.
@@ -448,18 +457,27 @@ mod tests {
             .any(|e| e["kind"] == "cwd_invalid" && e["issue"] == "not-absolute"));
     }
 
-    /// Silently spawning an unhooked agent is worse than refusing: it would look
-    /// live on the floor while reporting nothing.
+    /// A CLI that does not understand Claude's flags must not receive them —
+    /// the process would exit before it started. It is a hive citizen through
+    /// the terminal handoff instead.
     #[test]
-    fn an_unported_provider_is_refused_not_half_provisioned() {
+    fn a_non_claude_provider_spawns_without_claude_flags() {
         let (root, hive) = setup();
         let p = Provisioner { hive: &hive, hive_root: root.clone(), hook_bin: "md-hook".into() };
         let mut m = meta("ryan");
         m.provider = "codex".into();
 
-        let err = p.ensure_agent(&m).unwrap_err();
-        assert!(err.contains("codex") && err.contains("not ported"), "{err}");
-        assert!(!root.join("agents/ryan").exists(), "nothing half-written");
+        let inj = p.ensure_agent(&m).unwrap();
+        assert!(inj.args.is_empty(), "no Claude flags: {:?}", inj.args);
+        // Still provisioned: workspace, identity and registry entry all exist,
+        // because the agent is on the floor either way.
+        assert!(root.join("agents/ryan/identity.md").exists());
+        assert!(root.join("agents/ryan/inbox").is_dir());
+        assert_eq!(hive.registry()["agents"]["ryan"]["provider"], "codex");
+        // But no hook settings, because nothing would read them.
+        assert!(!root.join("agents/ryan/settings.json").exists());
+        // The env still carries identity, which the handoff prompt refers to.
+        assert_eq!(inj.env["AGENT_ID"], "ryan");
     }
 
     /// The board and the ledger hold real work; a second bootstrap must not

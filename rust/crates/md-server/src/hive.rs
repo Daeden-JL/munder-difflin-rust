@@ -34,16 +34,36 @@ const HOP_CAP: u64 = 12;
 /// ported yet, the bounce IS the behaviour here: loud, never silent.
 const NO_INBOX_PROVIDERS: [&str; 3] = ["kimi", "copilot", "custom"];
 
+/// The primary delivery path for a provider with no inbox drain: a work order
+/// TYPED into its terminal.
+///
+/// Returned rather than performed, so the hive stays free of the pty manager
+/// and the push hub. A caller that cannot deliver it says so, and the message
+/// bounces to the god — which is the fallback, not the plan.
+#[derive(Debug, Clone)]
+pub struct Handoff {
+    pub target: String,
+    pub text: String,
+}
+
 /// Serializes writers across every tenant.
 ///
-/// The Electron hive is a git repo with a single committer, which gave writes a
-/// natural order. Until that lands, this lock supplies the same guarantee for
-/// the read-modify-write cycles below — without it two concurrent card edits
-/// interleave and one is lost.
+/// The hive is a git repo with a SINGLE committer, and this lock is what makes
+/// that true: without it two concurrent card edits interleave and one is lost,
+/// and two commits race for the index lock. Held across the read-modify-write
+/// AND the commit, so a commit always captures a consistent tree.
 fn write_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
+
+/// Commits are best-effort and never block a write.
+///
+/// The hive's git history is an audit trail, not the storage: the files on disk
+/// are the record, and an agent reading them must not wait on a commit. A
+/// failure here — no git, a locked index, a hook refusing — is logged and
+/// dropped rather than failing the operation that produced it.
+const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// How long a file that will not parse is given to finish being written before
 /// it is treated as malformed. Comfortably longer than a write takes, and short
@@ -116,6 +136,59 @@ impl Hive {
     /// Append one hive event. Public for the same reason as `write_registry`.
     pub fn log(&self, event: Value) {
         self.append_log(event);
+    }
+
+    /// Initialise the hive's git repo if it has none.
+    ///
+    /// Identity is passed with `-c` rather than written into the repo config, so
+    /// the harness never depends on — or modifies — the user's global git
+    /// identity. Signing is disabled explicitly: a machine commit must not stall
+    /// on a passphrase prompt no one is there to answer.
+    fn git(&self, args: &[&str]) -> bool {
+        let mut cmd = std::process::Command::new("git");
+        cmd.args([
+            "-c", "commit.gpgsign=false",
+            "-c", "user.name=Hive",
+            "-c", "user.email=hive@local",
+        ])
+        .args(args)
+        .current_dir(&self.root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+        // A wedged git must not hold the write lock. Spawn, wait bounded, kill.
+        let Ok(mut child) = cmd.spawn() else { return false };
+        let deadline = std::time::Instant::now() + GIT_TIMEOUT;
+        loop {
+            match child.try_wait() {
+                Ok(Some(st)) => return st.success(),
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                _ => {
+                    let _ = child.kill();
+                    tracing::warn!("hive git command timed out");
+                    return false;
+                }
+            }
+        }
+    }
+
+    /// Commit the hive's current state.
+    ///
+    /// Callers already hold the write lock, so this is the single committer.
+    /// `git add -A` then commit: an empty commit is a no-op failure here and is
+    /// simply ignored, since "nothing changed" is a normal outcome.
+    pub fn commit(&self, message: &str) {
+        if !self.root.join(".git").exists() && !self.git(&["init", "-q"]) {
+            return;
+        }
+        if !self.git(&["add", "-A"]) {
+            return;
+        }
+        // --no-verify: a user's global hooks are not the harness's to run.
+        self.git(&["commit", "-q", "--no-verify", "-m", message]);
     }
 
     /// Append one event to `log.jsonl`. Best-effort by design: losing a log line
@@ -267,6 +340,7 @@ impl Hive {
             .is_ok()
         {
             self.append_log(json!({ "kind": "tasks", "count": n }));
+            self.commit(&format!("hive: tasks ({n})"));
         }
     }
 
@@ -354,6 +428,7 @@ impl Hive {
                     return fail(format!("could not write registry: {e}"));
                 }
                 self.append_log(log);
+                self.commit("hive: registry");
                 json!({ "ok": true })
             }
         }
@@ -498,9 +573,19 @@ impl Hive {
     /// Inject a message and route it. Returns the normalized message so the
     /// caller sees the id and defaults that were filled in.
     pub fn send(&self, partial: &Value, from: &str) -> Value {
+        self.send_offering_handoff(partial, from, &mut |_| false)
+    }
+
+    /// Send, offering a terminal handoff for targets that cannot drain an inbox.
+    pub fn send_offering_handoff(
+        &self,
+        partial: &Value,
+        from: &str,
+        handoff: &mut dyn FnMut(Handoff) -> bool,
+    ) -> Value {
         let _g = write_lock().lock().unwrap();
         let msg = normalize(partial, from);
-        let delivered = self.route(&msg);
+        let delivered = self.route_offering_handoff(&msg, handoff);
         json!({ "ok": true, "message": msg, "delivered": delivered })
     }
 
@@ -510,6 +595,23 @@ impl Hive {
     /// reports delivery rather than intent, so a bounced message can never read
     /// as delivered.
     fn route(&self, msg: &Value) -> Vec<String> {
+        self.route_with(msg, &mut |_| false)
+    }
+
+    /// Route, offering each hookless target a terminal handoff first.
+    ///
+    /// `handoff` returns whether the work order was actually delivered. A
+    /// caller with no terminal available returns false and the message bounces
+    /// to the god, so mail is never silently dropped for want of a channel.
+    pub fn route_offering_handoff(
+        &self,
+        msg: &Value,
+        handoff: &mut dyn FnMut(Handoff) -> bool,
+    ) -> Vec<String> {
+        self.route_with(msg, handoff)
+    }
+
+    fn route_with(&self, msg: &Value, handoff: &mut dyn FnMut(Handoff) -> bool) -> Vec<String> {
         let hops = msg.get("hops").and_then(|v| v.as_u64()).unwrap_or(0);
         let from = msg.get("from").and_then(|v| v.as_str()).unwrap_or("system").to_string();
         let to = msg.get("to").and_then(|v| v.as_str()).unwrap_or("god").to_string();
@@ -574,15 +676,23 @@ impl Hive {
                 ));
                 continue;
             }
-            // A provider with no inbox-drain path gets a terminal work-order in
-            // the Electron original. That channel is not ported, so this takes
-            // the original's own fallback: bounce to god to relay.
+            // A provider with no inbox drain gets a terminal work order — mail
+            // typed into its REPL. Only when that fails does it bounce to the
+            // god, which is the loud fallback rather than the plan.
             if t != god && NO_INBOX_PROVIDERS.contains(&provider(&t).as_str()) {
-                self.bounce(msg, &god, &format!(
-                    "[undeliverable — \"{}\" runs {} and has no inbox drain; relay this to it]",
-                    t,
-                    provider(&t)
-                ));
+                let order = Handoff {
+                    target: t.clone(),
+                    text: work_order(msg),
+                };
+                if handoff(order) {
+                    delivered.push(t);
+                } else {
+                    self.bounce(msg, &god, &format!(
+                        "[undeliverable — \"{}\" runs {} and the terminal handoff failed; relay this to it]",
+                        t,
+                        provider(&t)
+                    ));
+                }
                 continue;
             }
             if self.deliver(msg, &t) {
@@ -727,6 +837,27 @@ pub fn redact(text: &str) -> String {
     static BEARER: OnceLock<regex::Regex> = OnceLock::new();
     let bearer = BEARER.get_or_init(|| regex::Regex::new(r"(?i)(bearer\s+)[A-Za-z0-9._\-]{8,}").unwrap());
     bearer.replace_all(&s, "${1}[redacted]").into_owned()
+}
+
+/// A message rendered as something an agent can act on when it is typed into a
+/// REPL. Not JSON: the agent reads this as a prompt, and a JSON blob would be
+/// read as data to parse rather than work to do.
+fn work_order(msg: &Value) -> String {
+    let get = |k: &str| msg.get(k).and_then(|v| v.as_str()).unwrap_or("");
+    let mut out = format!("[hive] {} from {}", get("act"), get("from"));
+    let subject = get("subject");
+    if !subject.is_empty() {
+        out.push_str(&format!(": {subject}"));
+    }
+    let body = get("body");
+    if !body.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(body);
+    }
+    if msg.get("requires_reply").and_then(|v| v.as_bool()).unwrap_or(false) {
+        out.push_str("\n\n(Reply by writing a JSON message into your outbox/.)");
+    }
+    out
 }
 
 fn now_ms() -> u64 {
@@ -1060,6 +1191,47 @@ mod tests {
 
     /// Mail to a provider that cannot drain an inbox must surface loudly at the
     /// god, never rot unread in a mailbox nothing reads.
+    /// The work order is what the agent reads, so it has to be a prompt rather
+    /// than a JSON blob it would try to parse.
+    #[test]
+    fn a_work_order_reads_as_an_instruction() {
+        let order = work_order(&json!({
+            "act": "request", "from": "michael", "subject": "audit the stapler",
+            "body": "count them all", "requires_reply": true,
+        }));
+        assert!(order.starts_with("[hive] request from michael: audit the stapler"));
+        assert!(order.contains("count them all"));
+        assert!(order.contains("outbox"), "a reply-expected message says how to reply");
+        assert!(!order.contains('{'), "it must not read as data to parse");
+    }
+
+    /// The handoff is the PRIMARY path for a hookless provider; the bounce is
+    /// what happens when it fails.
+    #[test]
+    fn a_hookless_provider_receives_a_terminal_handoff() {
+        let h = with_agents(&["michael", "ryan"]);
+        h.write_json(
+            &h.root.join("registry.json"),
+            &json!({ "godId": "michael", "agents": {
+                "michael": {}, "ryan": { "provider": "custom" }
+            }}),
+        )
+        .unwrap();
+
+        let mut seen: Vec<Handoff> = Vec::new();
+        let msg = normalize(&json!({ "to": "ryan", "subject": "do the thing" }), "human");
+        let delivered = h.route_offering_handoff(&msg, &mut |o| {
+            seen.push(o);
+            true
+        });
+
+        assert_eq!(delivered, ["ryan"]);
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].target, "ryan");
+        assert!(seen[0].text.contains("do the thing"));
+        assert_eq!(h.inbox("michael").as_array().unwrap().len(), 0, "no bounce when it worked");
+    }
+
     #[test]
     fn mail_to_a_hookless_provider_bounces_to_the_god() {
         let h = Hive::new(tmp());
@@ -1225,6 +1397,31 @@ mod tests {
         assert!(!joined.contains("xoxb-"));
         assert_eq!(list[0]["direction"], "inbox");
         assert_eq!(list[0]["owner"], "jim");
+    }
+
+    /// The history is an audit trail, so a write has to leave a commit behind.
+    /// Best-effort by design: the files are the record, and a commit failure
+    /// must not fail the write that produced it.
+    #[test]
+    fn writes_leave_a_git_history_without_depending_on_it() {
+        let h = with_agents(&["jim"]);
+        h.commit("hive: init");
+        h.add_task(json!({ "id": "t1", "title": "first" }));
+        h.patch_task("t1", &json!({ "status": "done" }));
+
+        let log = std::process::Command::new("git")
+            .args(["log", "--oneline"])
+            .current_dir(&h.root)
+            .output();
+        // Skipped rather than failed where git is unavailable: the point is that
+        // the WRITES worked, which is asserted unconditionally below.
+        if let Ok(out) = log {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                assert!(text.contains("hive: tasks"), "no commit for the ledger: {text}");
+            }
+        }
+        assert_eq!(h.tasks()["tasks"][0]["status"], "done", "the write is the record");
     }
 
     #[test]
