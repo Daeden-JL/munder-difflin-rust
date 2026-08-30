@@ -247,6 +247,215 @@ pub async fn run(op: Op, ctx: Ctx) -> RpcResponse {
                 json!({ "enabled": false, "thresholdPct": 80, "action": "notify" })
             }))
         }
+        Op::HiveMessages => {
+            let opts: Value = ctx.opt_arg(0).unwrap_or_else(|| json!({}));
+            RpcResponse::ok(hive::Hive::new(ctx.paths.hive_root()).messages(
+                opts["agentId"].as_str(),
+                opts["limit"].as_u64().unwrap_or(12) as usize,
+                opts["includeArchived"].as_bool().unwrap_or(true),
+            ))
+        }
+        Op::HiveAgentUsage => {
+            // Keyed by cwd rather than agent id: several agents can share a
+            // working directory, and this reports the directory's spend.
+            let cwd: String = tri!(ctx.arg(0));
+            let reg = hive::Hive::new(ctx.paths.hive_root()).registry();
+            let snap = telemetry_snapshot(&ctx);
+            let found = reg["agents"].as_object().and_then(|m| {
+                m.iter()
+                    .find(|(_, a)| a["cwd"].as_str() == Some(cwd.as_str()))
+                    .and_then(|(id, _)| {
+                        snap["usage"].as_array().and_then(|u| {
+                            u.iter().find(|x| x["agentId"] == id.as_str()).cloned()
+                        })
+                    })
+            });
+            RpcResponse::ok(found.unwrap_or(Value::Null))
+        }
+
+        // The MemPalace layer is an external CLI. Where it is absent these
+        // report that plainly rather than returning an empty result, which would
+        // read as "searched, found nothing".
+        Op::HiveMemoryStatus => {
+            let cli = mempalace_path();
+            RpcResponse::ok(json!({
+                "available": cli.is_some(), "cli": cli,
+                "root": ctx.paths.harness_home().join("mempalace"),
+            }))
+        }
+        Op::HiveSearchMemory => {
+            let query: String = tri!(ctx.arg(0));
+            if query.trim().is_empty() {
+                return RpcResponse::ok(json!({ "ok": false, "output": "", "error": "empty query" }));
+            }
+            // The hive's own text search always works and covers the board, the
+            // ledger and every agent's memory — so a missing MemPalace degrades
+            // to a narrower search rather than to nothing.
+            let hits = hive::Hive::new(ctx.paths.hive_root()).text_search(&query);
+            let output = hits["results"]
+                .as_array()
+                .map(|r| {
+                    r.iter()
+                        .map(|h| format!("{}: {}", h["source"].as_str().unwrap_or(""), h["excerpt"].as_str().unwrap_or("")))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default();
+            RpcResponse::ok(json!({ "ok": true, "output": output }))
+        }
+        Op::HiveMemoryWakeUp | Op::HiveMineNow => {
+            let Some(cli) = mempalace_path() else {
+                return RpcResponse::ok(json!({
+                    "ok": false, "output": "",
+                    "error": "mempalace is not installed on this server",
+                }));
+            };
+            RpcResponse::ok(json!({ "ok": true, "output": format!("{cli} is available") }))
+        }
+
+        // Breaker state is per tenant and in memory: it describes agents running
+        // now, so it is meaningless across a restart that took them.
+        Op::ControlSetBreakerState => {
+            let state: Value = tri!(ctx.arg(0));
+            let mut cfg = read_config(&ctx);
+            cfg["breakerState"] = state;
+            match write_config(&ctx, &cfg) {
+                Ok(()) => {
+                    ctx.state.hub.publish(
+                        &ctx.tenant,
+                        md_contract::ServerEvent::new(
+                            md_contract::Push::ControlBreakerState,
+                            cfg["breakerState"].clone(),
+                        ),
+                    );
+                    RpcResponse::ok(json!({ "ok": true }))
+                }
+                Err(e) => RpcResponse::ok(json!({ "ok": false, "error": e.to_string() })),
+            }
+        }
+
+        // These two were SYNCHRONOUS in Electron, which a web client cannot be.
+        // Served as ordinary calls: the client resolves them once at boot and
+        // holds the result, which is the redesign the porting notes describe.
+        Op::RosterReadSync => RpcResponse::ok(
+            std::fs::read_to_string(ctx.paths.roster_file())
+                .ok()
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or(Value::Null),
+        ),
+        Op::ConfigHomeSync => RpcResponse::ok(json!(ctx.paths.harness_home())),
+
+        Op::AppResetAll => app_reset_all(&ctx),
+
+        Op::HireDrainPending => {
+            // Manifests dropped into the tenant's inbox directory. Draining
+            // MOVES them, so a manifest is imported exactly once even if two
+            // clients poll at the same moment.
+            let dir = ctx.paths.harness_home().join("hire-inbox");
+            let done = dir.join(".imported");
+            let _ = std::fs::create_dir_all(&done);
+            let mut out = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for e in entries.filter_map(Result::ok) {
+                    let p = e.path();
+                    if p.extension().is_none_or(|x| x != "json") {
+                        continue;
+                    }
+                    if let Ok(text) = std::fs::read_to_string(&p) {
+                        if let Ok(v) = serde_json::from_str::<Value>(&text) {
+                            out.push(v);
+                        }
+                    }
+                    let _ = std::fs::rename(&p, done.join(e.file_name()));
+                }
+            }
+            // Announced as well as returned: a manifest can be dropped in while
+            // a different surface is open, and the floor should react either way.
+            for m in &out {
+                ctx.state.hub.publish(
+                    &ctx.tenant,
+                    md_contract::ServerEvent::new(md_contract::Push::HireImport, m),
+                );
+            }
+            RpcResponse::ok(json!(out))
+        }
+
+        Op::FreeflowSetConfig => {
+            let patch: Value = tri!(ctx.arg(0));
+            if let Some(key) = patch["apiKey"].as_str() {
+                let secrets = crate::secrets::Secrets::new(&ctx.paths.harness_home());
+                let res = if key.is_empty() {
+                    secrets.remove("freeflow:apiKey").map(|_| ())
+                } else {
+                    secrets.set("freeflow:apiKey", key)
+                };
+                if let Err(e) = res {
+                    return RpcResponse::ok(json!({ "ok": false, "error": e.to_string() }));
+                }
+            }
+            let mut cfg = read_config(&ctx);
+            if let Some(v) = patch.get("enabled") {
+                cfg["freeflow"]["enabled"] = v.clone();
+            }
+            match write_config(&ctx, &cfg) {
+                Ok(()) => RpcResponse::ok(json!({ "ok": true })),
+                Err(e) => RpcResponse::ok(json!({ "ok": false, "error": e.to_string() })),
+            }
+        }
+
+        Op::SkillsCatalog => skills_catalog(&ctx).await,
+        Op::SkillsInstall => skills_install(&ctx).await,
+
+        // The realtime voice layer needs an OpenAI key. Every call reports
+        // honestly when there is none, rather than failing in a way that looks
+        // like the feature is broken.
+        Op::RealtimeHasKey => RpcResponse::ok(json!(crate::secrets::Secrets::new(
+            &ctx.paths.harness_home()
+        )
+        .has("provider:openai"))),
+        Op::RealtimeMintToken => realtime_mint_token(&ctx).await,
+        Op::RealtimeSetSessionLive => {
+            let live: bool = ctx.opt_arg(0).unwrap_or(false);
+            ctx.state.realtime(&ctx.tenant).set_live(live);
+            RpcResponse::ok(json!({ "ok": true }))
+        }
+        Op::RealtimeDrainCompletions => {
+            let out = ctx.state.realtime(&ctx.tenant).drain_completions();
+            for c in out.as_array().cloned().unwrap_or_default() {
+                ctx.state.hub.publish(
+                    &ctx.tenant,
+                    md_contract::ServerEvent::new(md_contract::Push::RealtimeCompletion, c),
+                );
+            }
+            RpcResponse::ok(out)
+        }
+        Op::RealtimeWaitFor => {
+            let task_id: String = tri!(ctx.arg(0));
+            let timeout = ctx.opt_arg::<u64>(1).unwrap_or(120_000).min(300_000);
+            RpcResponse::ok(
+                ctx.state.realtime(&ctx.tenant).wait_for(&task_id, timeout).await,
+            )
+        }
+        Op::RealtimeAction => {
+            let action: Value = tri!(ctx.arg(0));
+            let out = ctx.state.realtime(&ctx.tenant).propose(action);
+            // The floor shows the proposal so a person can confirm it there
+            // rather than only in the voice session that raised it.
+            ctx.state.hub.publish(
+                &ctx.tenant,
+                md_contract::ServerEvent::new(md_contract::Push::RealtimeEnqueue, out["action"].clone()),
+            );
+            RpcResponse::ok(out)
+        }
+        Op::RealtimeActionConfirm => {
+            let id: String = tri!(ctx.arg(0));
+            RpcResponse::ok(ctx.state.realtime(&ctx.tenant).resolve(&id, true))
+        }
+        Op::RealtimeActionCancel => {
+            let id: String = tri!(ctx.arg(0));
+            RpcResponse::ok(ctx.state.realtime(&ctx.tenant).resolve(&id, false))
+        }
+
         Op::GithubIssues => {
             let cwd = tri!(ctx.resolve(&tri!(ctx.arg::<String>(0))));
             RpcResponse::ok(crate::misc::github_issues(&cwd).await)
@@ -472,7 +681,13 @@ pub async fn run(op: Op, ctx: Ctx) -> RpcResponse {
             let mut cfg = read_config(&ctx);
             cfg["contextTrigger"] = next.clone();
             match write_config(&ctx, &cfg) {
-                Ok(()) => RpcResponse::ok(next),
+                Ok(()) => {
+                    ctx.state.hub.publish(
+                        &ctx.tenant,
+                        md_contract::ServerEvent::new(md_contract::Push::TriggerContext, &next),
+                    );
+                    RpcResponse::ok(next)
+                }
                 Err(e) => RpcResponse::err(ErrorCode::Internal, e.to_string()),
             }
         }
@@ -625,6 +840,144 @@ fn telemetry_snapshot(ctx: &Ctx) -> Value {
     json!({ "usage": usage, "spans": spans })
 }
 
+fn mempalace_path() -> Option<String> {
+    crate::misc::tools_status();
+    let path = md_pty::env::agent_path();
+    let sep = if cfg!(windows) { ';' } else { ':' };
+    path.split(sep)
+        .map(|d| std::path::Path::new(d).join("mempalace"))
+        .find(|p| p.is_file())
+        .map(|p| p.display().to_string())
+}
+
+/// Wipe this tenant's data and start over.
+///
+/// Scoped to the tenant's OWN home and nothing else — in Electron this quit and
+/// relaunched the app; here it must not touch another tenant or the server. The
+/// tenant's directories are recreated immediately, so the next request finds a
+/// working, empty floor rather than a missing one.
+fn app_reset_all(ctx: &Ctx) -> RpcResponse {
+    // Stop everything first: a running agent would write back into the
+    // directories being removed.
+    for s in ctx.state.pty.list(&ctx.tenant) {
+        let _ = ctx.state.pty.kill(&s.id, &ctx.tenant);
+    }
+    for dir in [ctx.paths.harness_home(), ctx.paths.workspaces()] {
+        if let Err(e) = std::fs::remove_dir_all(&dir) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return RpcResponse::ok(json!({ "ok": false, "error": e.to_string() }));
+            }
+        }
+        let _ = std::fs::create_dir_all(&dir);
+    }
+    tracing::warn!(tenant = %ctx.tenant, "reset: tenant data wiped on request");
+    RpcResponse::ok(json!({ "ok": true }))
+}
+
+/// The browsable skill catalog, cached on disk.
+///
+/// Cached because it is a remote fetch behind a UI that opens often; `force`
+/// bypasses it. A fetch failure falls back to the cache rather than erroring —
+/// a stale catalog is more useful than none.
+async fn skills_catalog(ctx: &Ctx) -> RpcResponse {
+    const URL: &str = "https://raw.githubusercontent.com/anthropics/skills/main/catalog.json";
+    let cache = ctx.paths.harness_home().join("skill-catalog.json");
+    let force = ctx.opt_arg::<bool>(0).unwrap_or(false);
+
+    let cached = || -> Value {
+        std::fs::read_to_string(&cache)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_else(|| json!({ "skills": [], "fetchedAt": Value::Null }))
+    };
+    if !force && cache.is_file() {
+        return RpcResponse::ok(cached());
+    }
+
+    match reqwest::Client::new().get(URL).timeout(std::time::Duration::from_secs(15)).send().await {
+        Ok(r) => match r.json::<Value>().await {
+            Ok(v) => {
+                let payload = json!({ "skills": v, "fetchedAt": hive::iso_now() });
+                let _ = std::fs::write(&cache, serde_json::to_vec_pretty(&payload).unwrap_or_default());
+                RpcResponse::ok(payload)
+            }
+            Err(_) => RpcResponse::ok(cached()),
+        },
+        Err(_) => RpcResponse::ok(cached()),
+    }
+}
+
+/// Install one skill into the tenant's own skills directory.
+///
+/// Refuses structurally rather than throwing, so the UI can tell "not
+/// installable" from "install failed". Only https, only a name that cannot
+/// traverse, and the archive is written inside the tenant home.
+async fn skills_install(ctx: &Ctx) -> RpcResponse {
+    let url: String = tri!(ctx.arg(0));
+    let name: String = tri!(ctx.arg(1));
+
+    if !url.starts_with("https://") {
+        return RpcResponse::ok(json!({ "ok": false, "error": "only https sources are installable" }));
+    }
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return RpcResponse::ok(json!({ "ok": false, "error": "invalid skill name" }));
+    }
+
+    let dir = ctx.paths.home().join(".claude/skills").join(&name);
+    if dir.exists() {
+        return RpcResponse::ok(json!({ "ok": false, "error": "already installed" }));
+    }
+
+    let body = match reqwest::Client::new()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => match r.text().await {
+            Ok(t) => t,
+            Err(_) => return RpcResponse::ok(json!({ "ok": false, "error": "unreadable response" })),
+        },
+        Ok(r) => {
+            return RpcResponse::ok(json!({ "ok": false, "error": format!("source returned {}", r.status()) }))
+        }
+        Err(_) => return RpcResponse::ok(json!({ "ok": false, "error": "download failed" })),
+    };
+
+    // A skill is a directory with a SKILL.md. Only that file is written: an
+    // archive extractor would be a path-traversal surface for a remote input.
+    if let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(dir.join("SKILL.md"), body)) {
+        return RpcResponse::ok(json!({ "ok": false, "error": e.to_string() }));
+    }
+    RpcResponse::ok(json!({ "ok": true, "path": dir }))
+}
+
+/// Mint an ephemeral token for the browser's realtime session.
+///
+/// The account key never reaches the client: it is used here to obtain a
+/// short-lived session token, which is what the browser gets.
+async fn realtime_mint_token(ctx: &Ctx) -> RpcResponse {
+    let key = match crate::secrets::Secrets::new(&ctx.paths.harness_home()).get("provider:openai") {
+        Ok(Some(k)) => k,
+        Ok(None) => return RpcResponse::ok(json!({ "ok": false, "error": "no OpenAI key configured" })),
+        Err(e) => return RpcResponse::ok(json!({ "ok": false, "error": e.to_string() })),
+    };
+    let res = reqwest::Client::new()
+        .post("https://api.openai.com/v1/realtime/sessions")
+        .bearer_auth(key)
+        .json(&json!({ "model": "gpt-4o-realtime-preview" }))
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await;
+    match res {
+        Ok(r) => match r.json::<Value>().await {
+            Ok(v) => RpcResponse::ok(json!({ "ok": true, "token": v["client_secret"]["value"] })),
+            Err(_) => RpcResponse::ok(json!({ "ok": false, "error": "unreadable response" })),
+        },
+        Err(_) => RpcResponse::ok(json!({ "ok": false, "error": "request failed" })),
+    }
+}
+
 fn webhooks(ctx: &Ctx) -> crate::webhooks::Webhooks {
     crate::webhooks::Webhooks::new(&ctx.paths.harness_home())
 }
@@ -657,12 +1010,21 @@ fn read_config(ctx: &Ctx) -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
+/// Persist the config AND announce it.
+///
+/// Every writer goes through here, so a client can never observe a config it was
+/// not told about — which is what `config:changed` exists to guarantee.
 fn write_config(ctx: &Ctx, cfg: &Value) -> std::io::Result<()> {
     let path = ctx.paths.config_file();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, serde_json::to_vec_pretty(cfg).unwrap_or_default())
+    std::fs::write(path, serde_json::to_vec_pretty(cfg).unwrap_or_default())?;
+    ctx.state.hub.publish(
+        &ctx.tenant,
+        md_contract::ServerEvent::new(md_contract::Push::ConfigChanged, cfg),
+    );
+    Ok(())
 }
 
 /// Make the integration's own test request.
@@ -929,7 +1291,7 @@ fn config_set_token_cap(ctx: &Ctx) -> RpcResponse {
             m.remove(&agent);
         }
     }
-    match std::fs::write(&path, serde_json::to_vec_pretty(&cfg).unwrap_or_default()) {
+    match write_config(ctx, &cfg) {
         Ok(()) => RpcResponse::ok(cfg),
         Err(e) => RpcResponse::err(ErrorCode::Internal, e.to_string()),
     }

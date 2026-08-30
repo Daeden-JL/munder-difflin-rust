@@ -124,6 +124,28 @@ pub enum Op {
     TelemetryUsage,
     HiveAgentDirectory,
     HiveAgentContext,
+    HiveMessages,
+    HiveAgentUsage,
+    HiveSearchMemory,
+    HiveMemoryStatus,
+    HiveMemoryWakeUp,
+    HiveMineNow,
+    ControlSetBreakerState,
+    RosterReadSync,
+    ConfigHomeSync,
+    AppResetAll,
+    HireDrainPending,
+    FreeflowSetConfig,
+    SkillsCatalog,
+    SkillsInstall,
+    RealtimeHasKey,
+    RealtimeMintToken,
+    RealtimeSetSessionLive,
+    RealtimeDrainCompletions,
+    RealtimeWaitFor,
+    RealtimeAction,
+    RealtimeActionConfirm,
+    RealtimeActionCancel,
 }
 
 /// What this server intends to do about a channel.
@@ -209,6 +231,10 @@ pub const fn plan(rpc: Rpc) -> Plan {
         // Opens a native picker. The ingest half is `hire:drainPending`.
         Rpc::HireOpenFile => Client("upload the manifest instead"),
         Rpc::SkillsReveal => Dropped("reveal-in-file-manager would act on the server"),
+        // Takes raw audio as an ArrayBuffer. A JSON argument array is the wrong
+        // shape for binary; this needs a multipart upload endpoint, which is a
+        // different surface rather than a port of this one.
+        Rpc::FreeflowTranscribe => Client("post the audio to an upload endpoint, not over RPC"),
         Rpc::UpdateCheckNow
         | Rpc::UpdateCurrent
         | Rpc::UpdateDownload
@@ -334,6 +360,28 @@ pub const fn handler_for(rpc: Rpc) -> Option<Op> {
         Rpc::TelemetryUsage => Op::TelemetryUsage,
         Rpc::HiveAgentDirectory => Op::HiveAgentDirectory,
         Rpc::HiveAgentContext => Op::HiveAgentContext,
+        Rpc::HiveMessages => Op::HiveMessages,
+        Rpc::HiveAgentUsage => Op::HiveAgentUsage,
+        Rpc::HiveSearchMemory => Op::HiveSearchMemory,
+        Rpc::HiveMemoryStatus => Op::HiveMemoryStatus,
+        Rpc::HiveMemoryWakeUp => Op::HiveMemoryWakeUp,
+        Rpc::HiveMineNow => Op::HiveMineNow,
+        Rpc::ControlSetBreakerState => Op::ControlSetBreakerState,
+        Rpc::RosterReadSync => Op::RosterReadSync,
+        Rpc::ConfigHomeSync => Op::ConfigHomeSync,
+        Rpc::AppResetAll => Op::AppResetAll,
+        Rpc::HireDrainPending => Op::HireDrainPending,
+        Rpc::FreeflowSetConfig => Op::FreeflowSetConfig,
+        Rpc::SkillsCatalog => Op::SkillsCatalog,
+        Rpc::SkillsInstall => Op::SkillsInstall,
+        Rpc::RealtimeHasKey => Op::RealtimeHasKey,
+        Rpc::RealtimeMintToken => Op::RealtimeMintToken,
+        Rpc::RealtimeSetSessionLive => Op::RealtimeSetSessionLive,
+        Rpc::RealtimeDrainCompletions => Op::RealtimeDrainCompletions,
+        Rpc::RealtimeWaitFor => Op::RealtimeWaitFor,
+        Rpc::RealtimeAction => Op::RealtimeAction,
+        Rpc::RealtimeActionConfirm => Op::RealtimeActionConfirm,
+        Rpc::RealtimeActionCancel => Op::RealtimeActionCancel,
         _ => return None,
     })
 }
@@ -427,7 +475,7 @@ mod tests {
         for (r, why) in not_applicable() {
             println!("  never {} — {}", r.as_str(), why);
         }
-        assert_eq!(done, 107, "handler count changed; update this number intentionally");
+        assert_eq!(done, 129, "handler count changed; update this number intentionally");
         assert_eq!(done + todo + na, total, "every channel must have exactly one plan");
     }
 
@@ -479,6 +527,7 @@ mod tests {
             Op::IntegrationsList, Op::IntegrationsTemplates, Op::IntegrationsUpsert, Op::IntegrationsSetSecret, Op::IntegrationsRemove, Op::IntegrationsTest, Op::ProviderKeySet, Op::ProviderKeyHas, Op::ProviderKeyClear, Op::TriggersGetContext, Op::TriggersSetContext,
             Op::WebhooksList, Op::WebhooksSave, Op::WebhooksDelete, Op::WebhooksGenerateSecret, Op::WebhooksStatus, Op::WebhookStatus, Op::WebhookGenerateSecret, Op::TriggerHistoryList, Op::TriggerHistoryClear, Op::TriggerHistoryDecide,
             Op::GithubIssues, Op::GithubCiRuns, Op::ToolsStatus, Op::SkillsLocal, Op::SkillsUninstall, Op::MissionsList, Op::MissionsSave, Op::OrgGetTrigger, Op::OrgSetTrigger, Op::WorkersList, Op::WorkersStop, Op::SlackSetConfig, Op::SlackStatus, Op::SlackReply, Op::TelemetrySnapshot, Op::TelemetrySpans, Op::TelemetryUsage, Op::HiveAgentDirectory, Op::HiveAgentContext,
+            Op::HiveMessages, Op::HiveAgentUsage, Op::HiveSearchMemory, Op::HiveMemoryStatus, Op::HiveMemoryWakeUp, Op::HiveMineNow, Op::ControlSetBreakerState, Op::RosterReadSync, Op::ConfigHomeSync, Op::AppResetAll, Op::HireDrainPending, Op::FreeflowSetConfig, Op::SkillsCatalog, Op::SkillsInstall, Op::RealtimeHasKey, Op::RealtimeMintToken, Op::RealtimeSetSessionLive, Op::RealtimeDrainCompletions, Op::RealtimeWaitFor, Op::RealtimeAction, Op::RealtimeActionConfirm, Op::RealtimeActionCancel,
         ];
         for op in all {
             assert!(ops.contains(&op), "{op:?} is not reachable from any channel");

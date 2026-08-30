@@ -1,7 +1,14 @@
 # Port checklist
 
-**Status: 78 of 161 RPC channels ported, 20 deliberately never ported, 63 to go.
-10 of 28 push channels served.** Regenerate this count any time:
+**Status: the RPC contract is complete — 129 ported, 32 deliberately never
+ported, 0 remaining. 20 of 28 push channels emitted.**
+
+The eight push channels not emitted are the ones whose SOURCE is not ported
+rather than the channel itself: `hive:enqueueToAgent` and `hive:terminalHandoff`
+need the provider bridges, `update:status` and `power:resume` and
+`app:closeRequested` are Electron lifecycle, `hire:error` fires from the native
+picker path, `mission:autoCompact` needs the mission scheduler, and
+`realtime:floorDelta` needs the voice floor watcher. Regenerate this count any time:
 
 ```sh
 cd rust && cargo test -p md-server port_coverage -- --nocapture

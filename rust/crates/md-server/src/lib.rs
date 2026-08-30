@@ -11,6 +11,7 @@ pub mod integrations;
 pub mod knowledge;
 pub mod handlers;
 pub mod misc;
+pub mod realtime;
 pub mod rpc;
 pub mod secrets;
 pub mod spawn;
@@ -67,6 +68,10 @@ pub async fn build(cfg: &ServerConfig, accounts: Vec<Account>, sandbox: Arc<dyn 
         .keys()
         .map(|t| (t.clone(), Arc::new(closing::Closing::new())))
         .collect();
+    let realtime: HashMap<TenantId, Arc<realtime::Realtime>> = tenants
+        .keys()
+        .map(|t| (t.clone(), Arc::new(realtime::Realtime::new())))
+        .collect();
 
     let state = AppState {
         sessions: SessionStore::new(),
@@ -77,6 +82,7 @@ pub async fn build(cfg: &ServerConfig, accounts: Vec<Account>, sandbox: Arc<dyn 
         sandbox,
         control: Arc::new(control),
         closing: Arc::new(closing),
+        realtime: Arc::new(realtime),
     };
 
     // One hook listener per tenant, inside that tenant's own hive directory.
@@ -137,6 +143,11 @@ pub async fn build(cfg: &ServerConfig, accounts: Vec<Account>, sandbox: Arc<dyn 
         .route("/hooks/{tenant}/{id}", post(webhook_post).get(webhook_status_get))
         .route("/rpc/{channel}", post(rpc::rpc_handler))
         .route("/ws", get(ws::ws_handler));
+
+    // Slack posts events to the same inbound surface as any other webhook; an
+    // endpoint with id `slack` receives them, so there is no second listener.
+    // The message is announced so the floor can show it arriving.
+    let _ = &state;
 
     // The built WASM client, when present. Absent in tests and in API-only runs.
     if let Some(dir) = &cfg.static_dir {
@@ -273,6 +284,22 @@ async fn webhook_post(
         .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
     handlers::announce_routed(&state, &tid, paths, &sent["message"], &delivered);
+
+    // An endpoint named `slack` is Slack's inbound channel. Announced on its own
+    // push so the floor can distinguish a chat message from a generic trigger.
+    if id == "slack" {
+        state.hub.publish(
+            &tid,
+            md_contract::ServerEvent::new(
+                md_contract::Push::SlackIncomingMessage,
+                serde_json::json!({
+                    "text": payload.get("text"),
+                    "channel": payload.get("channel"),
+                    "thread_ts": payload.get("thread_ts"),
+                }),
+            ),
+        );
+    }
 
     (
         axum::http::StatusCode::OK,

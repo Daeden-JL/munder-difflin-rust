@@ -444,6 +444,55 @@ impl Hive {
         });
     }
 
+    /// Recent message CONTENT across the floor, redacted.
+    ///
+    /// This is the one read that returns message BODIES rather than metadata,
+    /// so redaction happens here — server-side, before the text can reach a
+    /// client, a log, or a voice transcript.
+    pub fn messages(&self, agent: Option<&str>, limit: usize, include_archived: bool) -> Value {
+        let mut folders = Vec::new();
+        let ids: Vec<String> = match agent {
+            Some(id) => vec![id.to_string()],
+            None => std::fs::read_dir(self.root.join("agents"))
+                .map(|d| {
+                    d.filter_map(Result::ok)
+                        .filter_map(|e| e.file_name().to_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+        for id in ids {
+            let dir = self.agent_dir(&id);
+            folders.push((dir.join("inbox"), id.clone(), "inbox", false));
+            folders.push((dir.join("outbox"), id.clone(), "outbox", false));
+            if include_archived {
+                folders.push((dir.join("inbox/.done"), id.clone(), "inbox", true));
+                folders.push((dir.join("outbox/.sent"), id.clone(), "outbox", true));
+            }
+        }
+
+        let mut out = Vec::new();
+        for (dir, owner, direction, archived) in folders {
+            for m in self.list_messages(&dir).as_array().cloned().unwrap_or_default() {
+                out.push(json!({
+                    "id": m["id"], "conversation": m["conversation"],
+                    "from": m["from"], "to": m["to"], "act": m["act"],
+                    // Redacted, both fields — an agent can quote a credential
+                    // into a subject as easily as into a body.
+                    "subject": redact(m["subject"].as_str().unwrap_or("")),
+                    "body": redact(m["body"].as_str().unwrap_or("")),
+                    "requires_reply": m["requires_reply"],
+                    "direction": direction, "owner": owner, "archived": archived,
+                    "created_at": m["created_at"],
+                }));
+            }
+        }
+        // Newest first, by the id's leading timestamp.
+        out.sort_by(|a, b| b["id"].as_str().cmp(&a["id"].as_str()));
+        out.truncate(limit.clamp(1, 40));
+        json!(out)
+    }
+
     // ── Messaging ───────────────────────────────────────────────────────────
 
     /// Inject a message and route it. Returns the normalized message so the
@@ -637,6 +686,47 @@ impl Hive {
         let id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("message");
         self.write_json(&inbox.join(format!("{id}.json")), msg).is_ok()
     }
+}
+
+/// Strip credentials from text before it leaves the process.
+///
+/// Ported pattern for pattern from the Electron original. It is a backstop, not
+/// a guarantee — it catches the shapes that actually leak (a pasted key, a
+/// header an agent echoed) and cannot catch a secret with no recognisable
+/// form. That is why secrets are also never PUT anywhere an agent can read
+/// them; this is the second line, not the first.
+pub fn redact(text: &str) -> String {
+    use std::sync::OnceLock;
+    static RE: OnceLock<Vec<regex::Regex>> = OnceLock::new();
+    let patterns = RE.get_or_init(|| {
+        [
+            // PEM private-key blocks, header through footer.
+            r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
+            // JWTs: three base64url segments.
+            r"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}",
+            // Known credential prefixes: OpenAI/Anthropic, Slack, GitHub, AWS, Google.
+            r"sk-(?:ant-)?[A-Za-z0-9_-]{16,}",
+            r"xox[bpaors]-[A-Za-z0-9-]{10,}",
+            r"xapp-[A-Za-z0-9-]{10,}",
+            r"gh[posru]_[A-Za-z0-9]{20,}",
+            r"github_pat_[A-Za-z0-9_]{20,}",
+            r"AKIA[0-9A-Z]{16}",
+            r"AIza[A-Za-z0-9_-]{20,}",
+        ]
+        .iter()
+        .filter_map(|p| regex::Regex::new(p).ok())
+        .collect()
+    });
+
+    let mut s = text.to_string();
+    for re in patterns {
+        s = re.replace_all(&s, "[redacted]").into_owned();
+    }
+    // Bearer tokens: keep the label, drop the credential, so the reader can see
+    // that authentication was present without seeing what it was.
+    static BEARER: OnceLock<regex::Regex> = OnceLock::new();
+    let bearer = BEARER.get_or_init(|| regex::Regex::new(r"(?i)(bearer\s+)[A-Za-z0-9._\-]{8,}").unwrap());
+    bearer.replace_all(&s, "${1}[redacted]").into_owned()
 }
 
 fn now_ms() -> u64 {
@@ -1101,6 +1191,40 @@ mod tests {
         let out = h.text_search("stapler");
         assert_eq!(out["results"].as_array().unwrap().len(), 1);
         assert!(out["results"][0]["excerpt"].as_str().unwrap().contains("STAPLER"));
+    }
+
+    /// A backstop for the shapes that actually leak. It cannot catch a secret
+    /// with no recognisable form, which is why secrets are never put where an
+    /// agent can read them in the first place.
+    #[test]
+    fn redaction_catches_the_credential_shapes_that_leak() {
+        assert_eq!(redact("key sk-ant-api03-abcdefghijklmnopqrst here"), "key [redacted] here");
+        assert_eq!(redact("xoxb-1234567890-abcdef"), "[redacted]");
+        assert_eq!(redact("ghp_abcdefghijklmnopqrstuvwxyz012345"), "[redacted]");
+        assert_eq!(redact("AKIAIOSFODNN7EXAMPLE"), "[redacted]");
+        assert!(redact("Authorization: Bearer abcdefghijklmnop").ends_with("Bearer [redacted]"));
+        assert!(redact("token eyJhbGciOi.eyJzdWIiOi.SflKxwRJSM").contains("[redacted]"));
+        assert!(redact("-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----")
+            == "[redacted]");
+        // Ordinary prose must survive untouched.
+        assert_eq!(redact("the stapler is on the desk"), "the stapler is on the desk");
+    }
+
+    #[test]
+    fn messages_are_redacted_and_newest_first() {
+        let h = with_agents(&["jim"]);
+        h.send(&json!({ "to": "jim", "subject": "first", "body": "nothing here" }), "human");
+        h.send(&json!({ "to": "jim", "subject": "key is sk-ant-api03-abcdefghijklmnopqrst",
+                        "body": "and xoxb-1234567890-abcdef too" }), "human");
+
+        let out = h.messages(Some("jim"), 10, false);
+        let list = out.as_array().unwrap();
+        assert_eq!(list.len(), 2);
+        let joined = out.to_string();
+        assert!(!joined.contains("sk-ant-api03"), "subjects are redacted too");
+        assert!(!joined.contains("xoxb-"));
+        assert_eq!(list[0]["direction"], "inbox");
+        assert_eq!(list[0]["owner"], "jim");
     }
 
     #[test]

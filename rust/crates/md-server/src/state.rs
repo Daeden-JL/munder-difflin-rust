@@ -10,6 +10,7 @@ use md_tenant::{Sandbox, TenantId, TenantPaths};
 
 use crate::auth::{Account, SessionStore};
 use crate::closing::Closing;
+use crate::realtime::Realtime;
 use crate::control::Control;
 use crate::ws::Hub;
 
@@ -27,6 +28,9 @@ pub struct AppState {
     /// Closing-time state, per tenant. Winding down one tenant's floor must
     /// never touch another's.
     pub closing: Arc<HashMap<TenantId, Arc<Closing>>>,
+    /// Voice-session state, per tenant: proposals awaiting confirmation and
+    /// completions waiting to be drained.
+    pub realtime: Arc<HashMap<TenantId, Arc<Realtime>>>,
 }
 
 impl AppState {
@@ -41,6 +45,10 @@ impl AppState {
 
     pub fn closing(&self, tenant: &TenantId) -> Arc<Closing> {
         self.closing.get(tenant).cloned().unwrap_or_default()
+    }
+
+    pub fn realtime(&self, tenant: &TenantId) -> Arc<Realtime> {
+        self.realtime.get(tenant).cloned().unwrap_or_default()
     }
 }
 

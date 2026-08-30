@@ -268,6 +268,15 @@ fn emit(ctx: &HookCtx, p: &HookPayload, event: &str, blocked: bool) {
     if event.is_empty() {
         return;
     }
+    // Also surfaced as a telemetry event. Same boundary, two audiences: the
+    // floor animates from HiveHookEvent, the usage panels count from this.
+    ctx.hub.publish(
+        &ctx.tenant,
+        ServerEvent::new(
+            Push::TelemetryEvent,
+            json!({ "agentId": p.agent_id, "event": event, "tool": p.tool_name }),
+        ),
+    );
     ctx.hub.publish(
         &ctx.tenant,
         ServerEvent::new(
@@ -302,6 +311,16 @@ mod tests {
         )
     }
 
+    /// Everything published so far, so a test can assert on WHAT was sent
+    /// rather than on the order it happened to arrive in.
+    fn drain(rx: &mut Receiver<ServerEvent>) -> Vec<ServerEvent> {
+        let mut out = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            out.push(e);
+        }
+        out
+    }
+
     fn payload(event: &str, agent: &str) -> HookPayload {
         HookPayload {
             hook_event_name: Some(event.into()),
@@ -324,8 +343,17 @@ mod tests {
 
         // The approval request reaches the floor, and the boundary is marked
         // blocked so the UI can tell a denial from ordinary activity.
-        assert_eq!(rx.try_recv().unwrap().channel, Push::ControlApprovalRequest.as_str());
-        assert_eq!(rx.try_recv().unwrap().payload["blocked"], true);
+        //
+        // Matched by channel, not by position: one boundary fans out to several
+        // audiences (the floor, the usage panels), and how many is an
+        // implementation detail this test should not pin.
+        let events = drain(&mut rx);
+        assert!(events.iter().any(|e| e.channel == Push::ControlApprovalRequest.as_str()));
+        let hook = events
+            .iter()
+            .find(|e| e.channel == Push::HiveHookEvent.as_str())
+            .expect("the boundary is announced");
+        assert_eq!(hook.payload["blocked"], true);
     }
 
     #[test]
@@ -359,10 +387,10 @@ mod tests {
         });
 
         assert_eq!(handle(&p, &c), json!({}), "must not halt");
-        let ev = rx.try_recv().unwrap();
-        assert_eq!(ev.channel, Push::HiveContextUpdate.as_str());
-        assert_eq!(ev.payload["limit"], 1_000_000);
-        assert!(rx.try_recv().is_err(), "a status tick is not agent activity");
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 1, "a status tick is telemetry, not agent activity");
+        assert_eq!(events[0].channel, Push::HiveContextUpdate.as_str());
+        assert_eq!(events[0].payload["limit"], 1_000_000);
     }
 
     #[test]
@@ -409,9 +437,12 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(handle(&p, &c), json!({}));
-        let ev = rx.try_recv().unwrap();
-        assert!(ev.payload["agentId"].is_null());
-        assert_eq!(ev.payload["event"], "SessionStart");
+        let hook = drain(&mut rx)
+            .into_iter()
+            .find(|e| e.channel == Push::HiveHookEvent.as_str())
+            .expect("the boundary is announced");
+        assert!(hook.payload["agentId"].is_null());
+        assert_eq!(hook.payload["event"], "SessionStart");
     }
 
     /// End to end over a real socket: the reply must come back, or the shim
