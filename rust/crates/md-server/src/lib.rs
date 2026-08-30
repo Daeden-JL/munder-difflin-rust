@@ -7,6 +7,7 @@ pub mod git;
 pub mod hooks;
 pub mod history;
 pub mod hive;
+pub mod knowledge;
 pub mod handlers;
 pub mod rpc;
 pub mod spawn;

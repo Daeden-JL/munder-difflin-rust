@@ -709,7 +709,7 @@ fn normalize(partial: &Value, from: &str) -> Value {
     Value::Object(m)
 }
 
-fn iso_now() -> String {
+pub fn iso_now() -> String {
     let s = stamp();
     // Undo the filename-safe substitutions for the timestamp field itself.
     let (date, time) = s.split_once('T').unwrap_or((&s, ""));

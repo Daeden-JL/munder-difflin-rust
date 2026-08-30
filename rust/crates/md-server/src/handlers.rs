@@ -179,7 +179,110 @@ pub async fn run(op: Op, ctx: Ctx) -> RpcResponse {
             tracing::debug!(surface = ?ctx.opt_arg::<String>(0), tenant = %ctx.tenant, "message sent");
             RpcResponse::ok(Value::Null)
         }
+
+        Op::KgList => RpcResponse::ok(kg(&ctx).list()),
+        Op::KgStatus => RpcResponse::ok(kg(&ctx).status()),
+        Op::KgGet => RpcResponse::ok(kg(&ctx).get(&tri!(ctx.arg::<String>(0)))),
+        Op::KgRemove => RpcResponse::ok(kg(&ctx).remove(&tri!(ctx.arg::<String>(0)))),
+        Op::KgSearch => RpcResponse::ok(kg(&ctx).search(
+            &tri!(ctx.arg::<String>(0)),
+            ctx.opt_arg::<usize>(1).unwrap_or(8),
+        )),
+        Op::KgIngestFiles => kg_ingest(&ctx),
+        Op::RosterWrite => roster_write(&ctx),
+        Op::MemoryReflectNow => memory_reflect(&ctx),
     }
+}
+
+fn kg(ctx: &Ctx) -> crate::knowledge::Knowledge {
+    crate::knowledge::Knowledge::new(ctx.paths.harness_home().join("knowledge"))
+}
+
+/// Ingest files the tenant already has on the server.
+///
+/// Every path is resolved through the tenant guard: this is the one channel that
+/// reads arbitrary files at the client's request, so a traversal here would read
+/// the server's own filesystem into a searchable store.
+fn kg_ingest(ctx: &Ctx) -> RpcResponse {
+    let paths: Vec<String> = tri!(ctx.arg(0));
+    let tags: Vec<String> = ctx.opt_arg(1).unwrap_or_default();
+    let store = kg(ctx);
+
+    let mut results = Vec::new();
+    for raw in paths {
+        let resolved = match ctx.resolve(&raw) {
+            Ok(p) => p,
+            Err(_) => {
+                results.push(json!({ "ok": false, "srcPath": raw, "error": "outside the tenant home" }));
+                continue;
+            }
+        };
+        // Read as text. A binary file would be indexed as mojibake, so it is
+        // refused rather than silently producing an unsearchable document.
+        match std::fs::read(&resolved) {
+            Ok(bytes) if bytes.contains(&0) => {
+                results.push(json!({ "ok": false, "srcPath": raw, "error": "binary file" }));
+            }
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                let title = resolved
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("untitled");
+                results.push(store.ingest(title, &raw, &text, &tags));
+            }
+            Err(e) => results.push(json!({ "ok": false, "srcPath": raw, "error": e.to_string() })),
+        }
+    }
+    let ok = results.iter().all(|r| r["ok"] == true);
+    RpcResponse::ok(json!({ "ok": ok, "results": results }))
+}
+
+/// The UI floor roster — desks, characters, positions. Distinct from the hive
+/// registry, which is agent identity; this is presentation and belongs to the
+/// client, so it is stored verbatim rather than validated field by field.
+fn roster_write(ctx: &Ctx) -> RpcResponse {
+    let snap: Value = tri!(ctx.arg(0));
+    if !snap.is_object() {
+        return RpcResponse::ok(json!({ "ok": false, "skipped": "not an object" }));
+    }
+    let path = ctx.paths.roster_file();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // Write-then-rename: the roster is read at boot, and a truncated file would
+    // present as an empty floor.
+    let tmp = path.with_extension("json.tmp");
+    match std::fs::write(&tmp, serde_json::to_vec_pretty(&snap).unwrap_or_default())
+        .and_then(|()| std::fs::rename(&tmp, &path))
+    {
+        Ok(()) => RpcResponse::ok(json!({ "ok": true })),
+        Err(e) => RpcResponse::ok(json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+/// Ask an agent to condense its own memory.
+///
+/// Condensation is the AGENT's work, not the harness's — it is the one that
+/// knows which of its notes still matter. This delivers the instruction and
+/// returns what was asked, rather than rewriting `memory.md` behind its back.
+fn memory_reflect(ctx: &Ctx) -> RpcResponse {
+    let id: String = tri!(ctx.arg(0));
+    let h = hive::Hive::new(ctx.paths.hive_root());
+    if h.registry()["agents"][&id].is_null() {
+        return RpcResponse::ok(json!([]));
+    }
+    let out = h.send(
+        &json!({
+            "to": id,
+            "act": "request",
+            "subject": "Condense your memory",
+            "body": "Re-read your memory.md and rewrite it: keep durable facts, decisions and                      context; drop anything superseded, transient, or already visible in the                      repository. Keep it shorter than you found it.",
+        }),
+        "human",
+    );
+    let delivered = out["delivered"].as_array().is_some_and(|a| !a.is_empty());
+    RpcResponse::ok(json!([{ "id": id, "condensed": delivered }]))
 }
 
 fn history(ctx: &Ctx) -> crate::history::History {

@@ -76,6 +76,14 @@ pub enum Op {
     ConfigEnsureHome,
     ConfigSetAgentTokenCap,
     AnalyticsMessageSent,
+    KgList,
+    KgGet,
+    KgSearch,
+    KgRemove,
+    KgStatus,
+    KgIngestFiles,
+    RosterWrite,
+    MemoryReflectNow,
 }
 
 /// What this server intends to do about a channel.
@@ -119,6 +127,9 @@ pub const fn plan(rpc: Rpc) -> Plan {
         // file becomes an upload.
         Rpc::DialogChooseFolder => Client("browse the server with fs:listDir"),
         Rpc::DialogAttachFiles => Client("upload the file instead — a browser has no real path"),
+        // Opens a native picker and then ingests. The picker half cannot cross a
+        // network; the ingest half is `kg:ingestFiles`, which is ported.
+        Rpc::KgAddFiles => Client("pick files client-side, then call kg:ingestFiles"),
 
         // ── No meaning for a remote tenant ───────────────────────────────────
         // There is no window to close, and closing a tab must not stop the
@@ -209,6 +220,14 @@ pub const fn handler_for(rpc: Rpc) -> Option<Op> {
         Rpc::ConfigEnsureHome => Op::ConfigEnsureHome,
         Rpc::ConfigSetAgentTokenCap => Op::ConfigSetAgentTokenCap,
         Rpc::AnalyticsMessageSent => Op::AnalyticsMessageSent,
+        Rpc::KgList => Op::KgList,
+        Rpc::KgGet => Op::KgGet,
+        Rpc::KgSearch => Op::KgSearch,
+        Rpc::KgRemove => Op::KgRemove,
+        Rpc::KgStatus => Op::KgStatus,
+        Rpc::KgIngestFiles => Op::KgIngestFiles,
+        Rpc::RosterWrite => Op::RosterWrite,
+        Rpc::MemoryReflectNow => Op::MemoryReflectNow,
         _ => return None,
     })
 }
@@ -302,7 +321,7 @@ mod tests {
         for (r, why) in not_applicable() {
             println!("  never {} — {}", r.as_str(), why);
         }
-        assert_eq!(done, 59, "handler count changed; update this number intentionally");
+        assert_eq!(done, 67, "handler count changed; update this number intentionally");
         assert_eq!(done + todo + na, total, "every channel must have exactly one plan");
     }
 
@@ -350,6 +369,7 @@ mod tests {
             Op::ControlSnapshot, Op::ControlAutoDelivery, Op::ControlGateTool,
             Op::AppStartClosingTime, Op::AppCancelClosingTime,
             Op::HiveTextSearch, Op::HistoryAdd, Op::HistoryList, Op::HistorySearch, Op::SessionResolveCwd, Op::PtyRedraw, Op::FsReadBinary, Op::ConfigEnsureHome, Op::ConfigSetAgentTokenCap, Op::AnalyticsMessageSent,
+            Op::KgList, Op::KgGet, Op::KgSearch, Op::KgRemove, Op::KgStatus, Op::KgIngestFiles, Op::RosterWrite, Op::MemoryReflectNow,
         ];
         for op in all {
             assert!(ops.contains(&op), "{op:?} is not reachable from any channel");

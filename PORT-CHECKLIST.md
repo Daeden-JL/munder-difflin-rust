@@ -1,6 +1,6 @@
 # Port checklist
 
-**Status: 59 of 161 RPC channels ported, 19 deliberately never ported, 83 to go.
+**Status: 67 of 161 RPC channels ported, 20 deliberately never ported, 74 to go.
 10 of 28 push channels served.** Regenerate this count any time:
 
 ```sh
@@ -100,12 +100,30 @@ of it, so the remaining work is wide rather than deep.
    flag, i.e. command execution) and `safe_join` (a repo-relative path must not
    climb out), both with tests. `git` is now installed in the runtime image;
    without it every one of these channels fails at runtime, not at build.
-4. `db.ts` (175) + `memory.ts` (447) + `knowledge.ts` (122) + `kg-core.cjs` (359)
-   → `kg:*` (7) and `memory:*`. Keep the on-disk schema byte-compatible so an
-   existing harness home opens unchanged.
+4. ~~`knowledge.ts` + `kg-core.cjs` → `kg:*`~~ — **done.** File-backed, not
+   sqlite, deliberately: the store is a directory an agent CLI reads
+   out-of-process, so **the layout IS the interface** and moving it into a
+   database would break every agent that reads it directly.
+   `index.jsonl` (one line per chunk) + `docs/<id>/{meta.json,text.md}`.
 
-**Done when:** an existing harness home copied into a tenant dir opens with its
-config, git state, and memory intact.
+   Keyword scoring ported to match the original's ranking exactly — log-damped
+   term frequency, title boost, breadth bonus, exact-phrase bonus — because
+   agents and the UI search the same store, and disagreeing about relevance
+   would be worse than either ranking alone. Ties break on docId then chunk
+   index so identical queries return identical order.
+
+   `kg:ingestFiles` resolves every path through the tenant guard: it is the one
+   channel that reads arbitrary files at the client's request. Binary files are
+   refused rather than indexed as mojibake. `kg:addFiles` opens a native picker
+   and is therefore the client's job.
+
+5. ~~`db.ts` (175) → command history~~ — **done**, as an append-only JSONL log
+   rather than sqlite. History is append, read-the-tail, substring-search; a log
+   is that shape already, and it avoids a database for one table.
+
+**Still open:** `memory.ts` (447) condensation beyond `memory:reflectNow`, which
+currently asks the agent to condense its own memory — that is the agent's work,
+not the harness's, since only it knows which notes still matter.
 
 ### ◐ C3. Hive plane — ~4.7k LOC, the single largest unit
 `hive.ts` alone is 3,303 LOC and backs **23 channels**. Split in two, because
