@@ -17,6 +17,11 @@ use serde::Deserialize;
 
 pub const W: usize = 18;
 pub const H: usize = 28;
+/// The in-scene figure: same width and upper body as the portrait, taller to
+/// make room for legs. A walking character needs legs; a bust does not.
+pub const SCENE_W: usize = 18;
+pub const SCENE_H: usize = 32;
+const SHOE: Rgb = [44, 40, 48];
 /// Head skin columns. Every feature is placed relative to these.
 const HX0: i32 = 4;
 const HX1: i32 = 13;
@@ -733,6 +738,237 @@ pub fn portrait(r: &Recipe) -> Canvas {
     cv
 }
 
+/// Trousers, derived from the garment when a recipe does not name them. A suit
+/// gets its own colour; everything else gets a neutral that reads as separate
+/// from the top.
+fn default_pants(r: &Recipe) -> Rgb {
+    if r.cloth == "suit" {
+        shades(r.c1)[2]
+    } else {
+        [66, 70, 84]
+    }
+}
+
+/// The standing figure: a narrower torso than the portrait bust, over real legs.
+fn draw_scene_torso(cv: &mut Canvas, r: &Recipe, back: bool) {
+    let [hi, base, sh] = shades(r.c1);
+    if r.heavy {
+        cv.rect(3, 18, 14, 18, base);
+        cv.rect(2, 19, 15, 19, base);
+        cv.rect(2, 20, 15, 24, base);
+        for y in 20..=24 {
+            cv.set(2, y, sh);
+            cv.set(15, y, sh);
+            cv.set(14, y, sh);
+        }
+    } else {
+        cv.rect(4, 18, 13, 18, base);
+        cv.rect(3, 19, 14, 19, base);
+        cv.rect(4, 20, 13, 24, base);
+        for y in 20..=24 {
+            cv.set(3, y, sh);
+            cv.set(14, y, sh);
+            cv.set(13, y, sh);
+        }
+    }
+
+    if back {
+        // A plain back: a collar line and a centre seam. No garment detail,
+        // because none of it is visible from behind.
+        cv.rect(6, 18, 11, 18, sh);
+        for y in 19..=24 {
+            cv.set(8, y, sh);
+        }
+        return;
+    }
+
+    let skin = skin_pal(&r.skin);
+    let white: Rgb = [238, 238, 236];
+    match r.cloth.as_str() {
+        "suit" => {
+            for (x, y) in [(8, 18), (9, 18), (7, 19), (8, 19), (9, 19), (10, 19), (8, 20), (9, 20)] {
+                cv.set(x, y, white);
+            }
+            for (x, y) in [(6, 19), (7, 20), (11, 19), (10, 20)] {
+                cv.set(x, y, sh);
+            }
+            if let Some(tie) = r.tie {
+                for y in 19..=24 {
+                    cv.set(8, y, tie);
+                    cv.set(9, y, tie);
+                }
+                cv.set(8, 19, shades(tie)[0]);
+            }
+        }
+        "dressshirt" => {
+            for (x, y) in [(6, 18), (7, 18), (10, 18), (11, 18), (7, 19), (10, 19)] {
+                cv.set(x, y, sh);
+            }
+            match r.tie {
+                Some(tie) => {
+                    for y in 18..=24 {
+                        cv.set(8, y, tie);
+                        cv.set(9, y, tie);
+                    }
+                }
+                None => {
+                    let mut y = 20;
+                    while y <= 24 {
+                        cv.set(8, y, sh);
+                        y += 2;
+                    }
+                }
+            }
+        }
+        "polo" => {
+            for (x, y) in [(6, 18), (7, 18), (10, 18), (11, 18)] {
+                cv.set(x, y, hi);
+            }
+            cv.set(8, 19, sh);
+            cv.set(8, 21, sh);
+        }
+        "blouse" => {
+            for (x, y) in [(7, 18), (8, 18), (9, 18), (10, 18), (8, 19), (9, 19)] {
+                cv.set(x, y, skin.sh);
+            }
+            for x in 5..13 {
+                if cv.rgb_at(x, 19) == base {
+                    cv.set(x, 19, hi);
+                }
+            }
+        }
+        "cardigan" => {
+            let inner = r.c2.map(|c| shades(c)[1]).unwrap_or([235, 233, 226]);
+            for y in 18..=24 {
+                cv.set(8, y, inner);
+                cv.set(9, y, inner);
+            }
+            for (x, y) in [(6, 18), (7, 18), (10, 18), (11, 18)] {
+                cv.set(x, y, sh);
+            }
+        }
+        _ => {
+            for x in 6..=11 {
+                cv.set(x, 18, sh);
+            }
+        }
+    }
+}
+
+/// Legs, with one foot lifted per walk phase. Three phases: both down, left
+/// lifted, right lifted — enough for a gait to read at this size, and cheap
+/// enough to bake all of them.
+fn draw_scene_legs(cv: &mut Canvas, pants: Rgb, phase: u8) {
+    let [_, base, sh] = shades(pants);
+    for (lx0, lx1) in [(5, 7), (10, 12)] {
+        cv.rect(lx0, 25, lx1, 30, base);
+        for y in 25..=30 {
+            cv.set(lx1, y, sh);
+        }
+    }
+    let left_low = phase != 1;
+    let right_low = phase != 2;
+    cv.rect(5, if left_low { 31 } else { 30 }, 7, if left_low { 31 } else { 30 }, SHOE);
+    cv.rect(10, if right_low { 31 } else { 30 }, 12, if right_low { 31 } else { 30 }, SHOE);
+}
+
+/// The back of the head: a hair-covered skull with a crown sheen and a nape.
+/// No face, because there isn't one from behind — drawing one anyway is the
+/// classic tell of a sprite that only ever faced the camera.
+fn draw_head_back(cv: &mut Canvas, r: &Recipe) {
+    let s = skin_pal(&r.skin);
+    let rows: [(i32, i32, i32); 13] = [
+        (2, 6, 11), (3, 5, 12), (4, 4, 13), (5, 4, 13), (6, 4, 13), (7, 4, 13), (8, 4, 13),
+        (9, 4, 13), (10, 4, 13), (11, 4, 13), (12, 4, 13), (13, 5, 12), (14, 6, 11),
+    ];
+
+    if r.hair == "styleBald" {
+        let [shi, sbase, ssh] = shades_with(s.base, 1.1, 0.82);
+        for (y, a, b) in rows {
+            cv.rect(a, y, b, y, sbase);
+        }
+        for y in 4..=12 {
+            cv.set(4, y, ssh);
+            cv.set(13, y, ssh);
+        }
+        for (x, y) in [(7, 2), (8, 2), (9, 2), (8, 3), (9, 4), (9, 5)] {
+            cv.set(x, y, shi);
+        }
+        let [_, base, sh] = shades(r.hairc);
+        for x in 4..=13 {
+            cv.set(x, 11, base);
+            cv.set(x, 12, base);
+        }
+        for x in [4, 13] {
+            cv.set(x, 11, sh);
+            cv.set(x, 12, sh);
+        }
+    } else {
+        let [hi, base, sh] = shades(r.hairc);
+        for (y, a, b) in rows {
+            cv.rect(a, y, b, y, base);
+        }
+        // Long styles drape past the head from behind, which is where the
+        // length actually shows.
+        let len = match r.hair.as_str() {
+            "styleFrame" => r.length.unwrap_or(17),
+            "styleMessy" => r.length.unwrap_or(9),
+            _ => 0,
+        };
+        for y in 11..=len {
+            for x in [HX0 - 1, HX0, HX1, HX1 + 1] {
+                cv.set(x, y, base);
+            }
+        }
+        for y in 4..=12 {
+            cv.set(4, y, sh);
+            cv.set(13, y, sh);
+        }
+        for (x, y) in [(5, 3), (12, 3), (5, 13), (12, 13), (6, 14), (11, 14)] {
+            cv.set(x, y, sh);
+        }
+        for (x, y) in [(7, 2), (8, 2), (9, 2), (10, 2), (7, 3), (8, 3), (9, 3)] {
+            cv.set(x, y, hi);
+        }
+        for y in 4..=11 {
+            cv.set(9, y, hi);
+        }
+        for y in 4..=12 {
+            cv.set(8, y, sh);
+        }
+    }
+    cv.rect(7, 14, 10, 14, s.sh);
+    cv.rect(7, 15, 10, 17, s.sh);
+    cv.rect(7, 15, 9, 15, s.base);
+}
+
+/// One frame of the walking figure.
+///
+/// `phase` picks the gait frame; `back` draws the figure walking away. Frames
+/// are baked once per character rather than composed per tick — the recipe
+/// painter is per-pixel work, and a floor of agents redrawing it sixty times a
+/// second would spend the frame budget on art that never changes.
+pub fn scene(r: &Recipe, phase: u8, back: bool) -> Canvas {
+    let mut cv = Canvas::new(SCENE_W, SCENE_H);
+    draw_scene_torso(&mut cv, r, back);
+    draw_scene_legs(&mut cv, default_pants(r), phase);
+    if back {
+        draw_head_back(&mut cv, r);
+    } else {
+        draw_head(&mut cv, &r.skin);
+        draw_face(&mut cv, r);
+        if let Some(f) = &r.facial {
+            draw_facial(&mut cv, f, r.hairc);
+        }
+        draw_hair(&mut cv, r);
+        if r.glasses {
+            draw_glasses(&mut cv);
+        }
+    }
+    outline_pass(&mut cv);
+    cv
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -824,6 +1060,44 @@ mod tests {
         r.heavy = true;
         let heavy = portrait(&r);
         assert!(opaque(&heavy) > opaque(&slim));
+    }
+
+    #[test]
+    fn the_scene_figure_is_taller_and_has_legs() {
+        let cv = scene(&recipe("styleShort", "suit"), 0, false);
+        assert_eq!(cv.buf.len(), SCENE_W * SCENE_H * 4);
+        // Rows below the portrait's height are legs and feet.
+        let legs = (H as i32..SCENE_H as i32)
+            .flat_map(|y| (0..SCENE_W as i32).map(move |x| (x, y)))
+            .filter(|(x, y)| cv.alpha_at(*x, *y) > 0)
+            .count();
+        assert!(legs > 10, "expected legs below the bust, got {legs} pixels");
+    }
+
+    /// Three distinct gait frames, or the walk does not read as a walk.
+    #[test]
+    fn each_walk_phase_is_a_different_frame() {
+        let r = recipe("styleShort", "suit");
+        let frames: Vec<Vec<u8>> = (0..3).map(|p| scene(&r, p, false).buf).collect();
+        assert_ne!(frames[0], frames[1]);
+        assert_ne!(frames[0], frames[2]);
+        assert_ne!(frames[1], frames[2]);
+    }
+
+    /// Drawing a face on the back of a head is the classic tell of a sprite
+    /// that only ever faced the camera.
+    #[test]
+    fn the_back_view_has_no_face() {
+        let r = recipe("styleShort", "suit");
+        let front = scene(&r, 0, false);
+        let back = scene(&r, 0, true);
+        // The eye whites are the most distinctive face pixels.
+        let whites = |cv: &Canvas| {
+            cv.buf.chunks(4).filter(|p| [p[0], p[1], p[2]] == [250, 248, 244] && p[3] > 0).count()
+        };
+        assert!(whites(&front) > 0, "the front view has eyes");
+        assert_eq!(whites(&back), 0, "the back view must not");
+        assert!(back.buf.chunks(4).filter(|p| p[3] > 0).count() > 200, "but is still a figure");
     }
 
     /// A theme file typo should be a visible error, not a silently missing hat.

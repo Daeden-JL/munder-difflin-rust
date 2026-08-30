@@ -43,6 +43,10 @@ header {
 .agent:hover { background:#1a212b }
 .agent.sel { background:#1a212b; border-color:var(--accent) }
 .pip { width:7px; height:7px; border-radius:50%; background:var(--line); flex:0 0 auto }
+/* The same recipe the floor paints, at portrait crop. Pixelated for the same
+   reason as the floor: smoothing turns 18x28 art into a smudge. */
+.face { width:22px; height:34px; flex:0 0 auto; image-rendering:pixelated;
+        background:#11161d; border-radius:3px }
 .pip.live { background:var(--ok) }
 .pip.hold { background:var(--warn) }
 .who { display:flex; flex-direction:column; min-width:0; flex:1 }
@@ -61,7 +65,10 @@ header {
                     border-radius:4px; padding:.15rem .4rem }
 /* The canvas scales to the panel; nearest-neighbour keeps the pixel art crisp
    instead of letting the browser smooth it into mush. */
-.floor canvas { display:block; width:100%; max-height:15rem; image-rendering:pixelated; cursor:pointer }
+/* The room keeps its aspect: letting it stretch would skew the pixel grid and
+   undo the point of nearest-neighbour scaling. */
+.floor canvas { display:block; width:100%; height:auto; max-height:22rem;
+                object-fit:contain; image-rendering:pixelated; cursor:pointer }
 
 /* ── conversation ──────────────────────────────────────────────────────── */
 .convo { flex:1; min-width:0; display:flex; flex-direction:column }

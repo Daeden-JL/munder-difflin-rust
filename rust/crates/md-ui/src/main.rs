@@ -52,6 +52,10 @@ fn App() -> impl IntoView {
     // Bumped by any hook event, so the conversation refreshes the moment the
     // agent does something rather than on the poll interval.
     let activity = RwSignal::new(0u32);
+    // The last (agentId, tool) seen on the hook stream. The floor reads it to
+    // send that agent to the station the tool belongs to, which is what makes
+    // the room a live picture of the fleet rather than a decoration.
+    let tool_activity = RwSignal::new(Option::<(String, String)>::None);
     let status = RwSignal::new(String::new());
     // Which bundled theme is on the floor. The chosen theme changes who the
     // agents look like and nothing else — identity, memory and desk order are
@@ -78,9 +82,12 @@ fn App() -> impl IntoView {
                 match channel {
                     c if c.starts_with("hive:hookEvent") => {
                         activity.update(|n| *n = n.wrapping_add(1));
+                        let who = ev.pointer("/payload/agentId").and_then(|a| a.as_str()).unwrap_or("");
                         if let Some(tool) = ev.pointer("/payload/tool").and_then(|t| t.as_str()) {
-                            let who = ev.pointer("/payload/agentId").and_then(|a| a.as_str()).unwrap_or("");
                             status.set(format!("{who} · {tool}"));
+                            if !who.is_empty() {
+                                tool_activity.set(Some((who.to_string(), tool.to_string())));
+                            }
                         }
                     }
                     // Any of these changes the roster, so re-read it rather than
@@ -171,9 +178,10 @@ fn App() -> impl IntoView {
                     }>"closing time"</button>
                 </header>
                 <div class="body">
-                    <Roster agents selected/>
+                    <Roster agents selected theme/>
                     <div class="main">
-                        <Floor occupants=Signal::derive(move || occupants(agents.get())) theme selected/>
+                        <Floor occupants=Signal::derive(move || occupants(agents.get()))
+                               theme selected activity=tool_activity/>
                         <Show
                             when=move || pane.get() == "chat"
                             fallback=move || view! { <Editor root/> }
@@ -242,7 +250,19 @@ fn Login(authed: RwSignal<bool>) -> impl IntoView {
 }
 
 #[component]
-fn Roster(agents: RwSignal<Vec<Agent>>, selected: RwSignal<Option<String>>) -> impl IntoView {
+fn Roster(
+    agents: RwSignal<Vec<Agent>>,
+    selected: RwSignal<Option<String>>,
+    theme: RwSignal<usize>,
+) -> impl IntoView {
+    // Archetypes are assigned the same way the floor assigns them, from the
+    // same stable id order — so the face beside a name is the figure on the
+    // floor, not a different member of the cast.
+    let slots = Signal::derive(move || {
+        let mut ids: Vec<String> = agents.get().into_iter().map(|a| a.id).collect();
+        ids.sort();
+        theme::assign(&ids)
+    });
     view! {
         <aside class="roster">
             <Show when=move || agents.get().is_empty()>
@@ -255,13 +275,40 @@ fn Roster(agents: RwSignal<Vec<Agent>>, selected: RwSignal<Option<String>>) -> i
                         let id = id.clone();
                         move || selected.get().as_deref() == Some(id.as_str())
                     };
+                    let face = {
+                        let id = a.id.clone();
+                        move || {
+                            let themes = theme::builtin();
+                            let t = themes.get(theme.get() % themes.len().max(1))?;
+                            let arch = slots.get().get(&id)?.clone();
+                            floor::portrait_data_url(t, &arch)
+                        }
+                    };
                     view! {
                         <button class="agent" class:sel=is_selected
                                 on:click=move |_| selected.set(Some(id.clone()))>
                             <span class="pip" class:live=a.live class:hold=a.on_hold></span>
+                            <img class="face" src=move || face().unwrap_or_default() alt=""/>
                             <span class="who">
                                 <b>{a.name.clone()}</b>
-                                <i>{if a.is_god { "orchestrator".to_string() } else { a.role.clone() }}</i>
+                                // Role, and who they are DRESSED as. Without the
+                                // second half a theme switch changes the art and
+                                // nothing says why.
+                                <i>{
+                                    let id = a.id.clone();
+                                    let role = if a.is_god { "orchestrator".to_string() } else { a.role.clone() };
+                                    move || {
+                                        let themes = theme::builtin();
+                                        let dressed = themes
+                                            .get(theme.get() % themes.len().max(1))
+                                            .and_then(|t| slots.get().get(&id).and_then(|arch| floor::character_name(t, arch)));
+                                        match dressed {
+                                            Some(d) if !role.is_empty() => format!("{role} · {d}"),
+                                            Some(d) => d,
+                                            None => role.clone(),
+                                        }
+                                    }
+                                }</i>
                             </span>
                             <Show when=move || a.archived>
                                 <span class="tag">"archived"</span>
