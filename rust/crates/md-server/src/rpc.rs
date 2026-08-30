@@ -95,6 +95,16 @@ pub enum Op {
     ProviderKeyClear,
     TriggersGetContext,
     TriggersSetContext,
+    WebhooksList,
+    WebhooksSave,
+    WebhooksDelete,
+    WebhooksGenerateSecret,
+    WebhooksStatus,
+    WebhookStatus,
+    WebhookGenerateSecret,
+    TriggerHistoryList,
+    TriggerHistoryClear,
+    TriggerHistoryDecide,
 }
 
 /// What this server intends to do about a channel.
@@ -154,6 +164,14 @@ pub const fn plan(rpc: Rpc) -> Plan {
         Rpc::TerminalOpenAtFolder => Dropped("open-in-terminal would act on the server"),
         // electron-updater is gone. The server updates out of band; the client
         // needs at most a "reload, the server changed" signal.
+        // The Electron version ran a second HTTP server and opened a tunnel for
+        // inbound webhooks. This server is already reachable, so the endpoints
+        // are routes on it — there is nothing to start, stop, or configure a
+        // port for. `webhook:status` still answers, with the real URL.
+        Rpc::WebhookStart | Rpc::WebhookStop => {
+            Dropped("webhook endpoints are routes on this server — always on")
+        }
+        Rpc::WebhookSetConfig => Dropped("no separate webhook server to configure"),
         Rpc::UpdateCheckNow
         | Rpc::UpdateCurrent
         | Rpc::UpdateDownload
@@ -250,6 +268,16 @@ pub const fn handler_for(rpc: Rpc) -> Option<Op> {
         Rpc::ProviderKeyClear => Op::ProviderKeyClear,
         Rpc::TriggersGetContext => Op::TriggersGetContext,
         Rpc::TriggersSetContext => Op::TriggersSetContext,
+        Rpc::WebhooksList => Op::WebhooksList,
+        Rpc::WebhooksSave => Op::WebhooksSave,
+        Rpc::WebhooksDelete => Op::WebhooksDelete,
+        Rpc::WebhooksGenerateSecret => Op::WebhooksGenerateSecret,
+        Rpc::WebhooksStatus => Op::WebhooksStatus,
+        Rpc::WebhookStatus => Op::WebhookStatus,
+        Rpc::WebhookGenerateSecret => Op::WebhookGenerateSecret,
+        Rpc::TriggerHistoryList => Op::TriggerHistoryList,
+        Rpc::TriggerHistoryClear => Op::TriggerHistoryClear,
+        Rpc::TriggerHistoryDecide => Op::TriggerHistoryDecide,
         _ => return None,
     })
 }
@@ -343,7 +371,7 @@ mod tests {
         for (r, why) in not_applicable() {
             println!("  never {} — {}", r.as_str(), why);
         }
-        assert_eq!(done, 78, "handler count changed; update this number intentionally");
+        assert_eq!(done, 88, "handler count changed; update this number intentionally");
         assert_eq!(done + todo + na, total, "every channel must have exactly one plan");
     }
 
@@ -393,6 +421,7 @@ mod tests {
             Op::HiveTextSearch, Op::HistoryAdd, Op::HistoryList, Op::HistorySearch, Op::SessionResolveCwd, Op::PtyRedraw, Op::FsReadBinary, Op::ConfigEnsureHome, Op::ConfigSetAgentTokenCap, Op::AnalyticsMessageSent,
             Op::KgList, Op::KgGet, Op::KgSearch, Op::KgRemove, Op::KgStatus, Op::KgIngestFiles, Op::RosterWrite, Op::MemoryReflectNow,
             Op::IntegrationsList, Op::IntegrationsTemplates, Op::IntegrationsUpsert, Op::IntegrationsSetSecret, Op::IntegrationsRemove, Op::IntegrationsTest, Op::ProviderKeySet, Op::ProviderKeyHas, Op::ProviderKeyClear, Op::TriggersGetContext, Op::TriggersSetContext,
+            Op::WebhooksList, Op::WebhooksSave, Op::WebhooksDelete, Op::WebhooksGenerateSecret, Op::WebhooksStatus, Op::WebhookStatus, Op::WebhookGenerateSecret, Op::TriggerHistoryList, Op::TriggerHistoryClear, Op::TriggerHistoryDecide,
         ];
         for op in all {
             assert!(ops.contains(&op), "{op:?} is not reachable from any channel");

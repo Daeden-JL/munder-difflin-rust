@@ -15,6 +15,7 @@ pub mod secrets;
 pub mod spawn;
 pub mod state;
 pub mod transcript;
+pub mod webhooks;
 pub mod ws;
 
 use std::collections::HashMap;
@@ -129,6 +130,10 @@ pub async fn build(cfg: &ServerConfig, accounts: Vec<Account>, sandbox: Arc<dyn 
         // one to the generated enum would make the parity numbers describe a
         // contract that never existed.
         .route("/api/transcript", get(transcript_route))
+        // Inbound webhooks. Public and secret-gated, so deliberately OUTSIDE
+        // the session-authenticated surface — and on this same server, which is
+        // why the Electron version's second HTTP server and tunnel disappear.
+        .route("/hooks/{tenant}/{id}", post(webhook_post).get(webhook_status_get))
         .route("/rpc/{channel}", post(rpc::rpc_handler))
         .route("/ws", get(ws::ws_handler));
 
@@ -182,6 +187,148 @@ async fn login(
         // Also returned in the body for non-browser clients and the WS handshake.
         Json(serde_json::json!({ "token": token, "tenant": account.tenant.as_str() })),
     ).into_response()
+}
+
+/// Answer every rejection identically.
+///
+/// An unknown tenant, an unknown endpoint and a wrong secret must be
+/// indistinguishable — otherwise the surface can be walked to discover which
+/// tenants and endpoints exist.
+fn webhook_denied() -> (axum::http::StatusCode, Json<serde_json::Value>) {
+    (
+        axum::http::StatusCode::UNAUTHORIZED,
+        Json(serde_json::json!({ "ok": false, "error": "unauthorized" })),
+    )
+}
+
+/// Turn an external POST into hive work.
+async fn webhook_post(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path((tenant, id)): axum::extract::Path<(String, String)>,
+    headers: axum::http::HeaderMap,
+    body: String,
+) -> impl axum::response::IntoResponse {
+    // Rate limit FIRST, before any parsing or comparison: the point is to bound
+    // the work an unauthenticated caller can cause. Rejected requests consume
+    // the budget too, or guessing secrets would be free.
+    if !webhooks::allow(&format!("{tenant}/{id}")) {
+        return (
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({ "ok": false, "error": "rate limited" })),
+        );
+    }
+    if body.len() > webhooks::MAX_BODY {
+        return (
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({ "ok": false, "error": "body too large" })),
+        );
+    }
+
+    let presented = headers
+        .get("x-md-webhook-secret")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let Ok(tid) = TenantId::parse(&tenant) else { return webhook_denied() };
+    let Some(paths) = state.paths(&tid) else { return webhook_denied() };
+    let Some(endpoint) = webhooks::Webhooks::new(&paths.harness_home()).authenticate(&id, presented)
+    else {
+        return webhook_denied();
+    };
+
+    // The token is minted here and returned ONCE. Only its hash is persisted, so
+    // a leak of the task ledger does not leak the tokens.
+    let token = webhooks::mint_token();
+    let payload: serde_json::Value =
+        serde_json::from_str(&body).unwrap_or_else(|_| serde_json::json!({ "raw": body }));
+
+    let task_id = format!("wh-{}", webhooks::random_hex(8));
+    let hive = hive::Hive::new(paths.hive_root());
+    hive.add_task(serde_json::json!({
+        "id": task_id,
+        "title": payload.get("title").and_then(|v| v.as_str())
+            .unwrap_or_else(|| endpoint["name"].as_str().unwrap_or("Webhook request")),
+        "description": payload.get("body").and_then(|v| v.as_str()).unwrap_or(&body),
+        "status": "todo",
+        "priority": 2,
+        "dependsOn": [],
+        "createdAt": hive::iso_now(),
+        // The HASH, never the token.
+        "webhook": { "tokenHash": webhooks::hash_token(&token) },
+    }));
+
+    // The endpoint's public fields only — the record never reaches the message.
+    let sent = hive.send(
+        &serde_json::json!({
+            "to": "god",
+            "act": "request",
+            "subject": format!("Webhook: {}", endpoint["name"].as_str().unwrap_or(&id)),
+            "body": format!("An external caller triggered `{id}`. Card `{task_id}` is on the board.\n\n{payload}"),
+        }),
+        "webhook",
+    );
+    let delivered: Vec<String> = sent["delivered"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    handlers::announce_routed(&state, &tid, paths, &sent["message"], &delivered);
+
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!({ "ok": true, "token": token, "taskId": task_id })),
+    )
+}
+
+/// Report the status of the ONE task a token maps to.
+///
+/// The lookup runs whether or not the tenant or endpoint exists, and the
+/// not-found answer is identical in every case — same reason as the POST gate.
+async fn webhook_status_get(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path((tenant, id)): axum::extract::Path<(String, String)>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl axum::response::IntoResponse {
+    if !webhooks::allow(&format!("{tenant}/{id}")) {
+        return (
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({ "ok": false })),
+        );
+    }
+    let token = headers
+        .get("x-md-webhook-token")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from)
+        .or_else(|| q.get("token").cloned())
+        .unwrap_or_default();
+    let want = webhooks::hash_token(&token);
+
+    let not_found = (
+        axum::http::StatusCode::NOT_FOUND,
+        Json(serde_json::json!({ "ok": false, "error": "not found" })),
+    );
+    let Ok(tid) = TenantId::parse(&tenant) else { return not_found };
+    let Some(paths) = state.paths(&tid) else { return not_found };
+
+    let tasks = hive::Hive::new(paths.hive_root()).tasks();
+    let Some(card) = tasks["tasks"].as_array().and_then(|list| {
+        list.iter()
+            .find(|t| !token.is_empty() && t.pointer("/webhook/tokenHash").and_then(|v| v.as_str()) == Some(&want))
+    }) else {
+        return not_found;
+    };
+
+    // Only this card, and only these fields: a capability token is not a
+    // licence to read the board.
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!({
+            "ok": true,
+            "status": card["status"],
+            "title": card["title"],
+            "result": card.get("result"),
+        })),
+    )
 }
 
 #[derive(serde::Deserialize)]

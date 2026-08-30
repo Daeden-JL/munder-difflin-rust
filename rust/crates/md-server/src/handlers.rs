@@ -247,6 +247,72 @@ pub async fn run(op: Op, ctx: Ctx) -> RpcResponse {
                 json!({ "enabled": false, "thresholdPct": 80, "action": "notify" })
             }))
         }
+        Op::WebhooksList => RpcResponse::ok(webhooks(&ctx).list()),
+        Op::WebhooksSave => {
+            let list: Vec<Value> = tri!(ctx.arg(0));
+            RpcResponse::ok(webhooks(&ctx).save(&list))
+        }
+        Op::WebhooksDelete => RpcResponse::ok(webhooks(&ctx).delete(&tri!(ctx.arg::<String>(0)))),
+        // Returned ONCE, here. It is never readable again: `list` reports only
+        // whether a secret is set.
+        Op::WebhooksGenerateSecret => RpcResponse::ok(json!(crate::webhooks::random_hex(24))),
+        Op::WebhookGenerateSecret => {
+            RpcResponse::ok(json!({ "ok": true, "secret": crate::webhooks::random_hex(24) }))
+        }
+        Op::WebhooksStatus | Op::WebhookStatus => {
+            // Always running: the endpoints are routes on this server. The URL is
+            // built from the configured public origin, because the server cannot
+            // know how it is reached from outside.
+            let base = std::env::var("MD_PUBLIC_ORIGIN").unwrap_or_default();
+            RpcResponse::ok(json!({
+                "running": true,
+                "url": if base.is_empty() { Value::Null }
+                       else { json!(format!("{}/hooks/{}", base.trim_end_matches('/'), ctx.tenant)) },
+            }))
+        }
+
+        Op::TriggerHistoryList => RpcResponse::ok(trigger_history(&ctx)),
+        Op::TriggerHistoryClear => {
+            let source: String = tri!(ctx.arg(0));
+            let kept: Vec<Value> = trigger_history(&ctx)
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|e| e["source"].as_str() != Some(source.as_str()))
+                .collect();
+            write_trigger_history(&ctx, kept);
+            RpcResponse::ok(Value::Null)
+        }
+        Op::TriggerHistoryDecide => {
+            let arg: Value = tri!(ctx.arg(0));
+            let (id, decision) = (
+                arg["id"].as_str().unwrap_or("").to_string(),
+                arg["decision"].as_str().unwrap_or("").to_string(),
+            );
+            if !matches!(decision.as_str(), "approved" | "rejected") {
+                return RpcResponse::ok(Value::Null);
+            }
+            let mut all: Vec<Value> = trigger_history(&ctx).as_array().cloned().unwrap_or_default();
+            let Some(slot) = all.iter_mut().find(|e| e["id"].as_str() == Some(id.as_str())) else {
+                return RpcResponse::ok(Value::Null);
+            };
+            // A decision is recorded once. Re-deciding would let an approved
+            // request be replayed as a fresh one.
+            if slot["decision"].is_string() {
+                return RpcResponse::ok(slot.clone());
+            }
+            slot["decision"] = json!(decision);
+            slot["decidedAt"] = json!(hive::iso_now());
+            let updated = slot.clone();
+            write_trigger_history(&ctx, all);
+            ctx.state.hub.publish(
+                &ctx.tenant,
+                md_contract::ServerEvent::new(md_contract::Push::TriggerHistoryUpdated, Value::Null),
+            );
+            RpcResponse::ok(updated)
+        }
+
         Op::TriggersSetContext => {
             let next: Value = tri!(ctx.arg(0));
             let mut cfg = read_config(&ctx);
@@ -261,6 +327,30 @@ pub async fn run(op: Op, ctx: Ctx) -> RpcResponse {
 
 fn integrations(ctx: &Ctx) -> crate::integrations::Integrations {
     crate::integrations::Integrations::new(&ctx.paths.harness_home())
+}
+
+fn webhooks(ctx: &Ctx) -> crate::webhooks::Webhooks {
+    crate::webhooks::Webhooks::new(&ctx.paths.harness_home())
+}
+
+fn trigger_history_path(ctx: &Ctx) -> std::path::PathBuf {
+    ctx.paths.harness_home().join("trigger-history.json")
+}
+
+fn trigger_history(ctx: &Ctx) -> Value {
+    std::fs::read_to_string(trigger_history_path(ctx))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .filter(|v: &Value| v.is_array())
+        .unwrap_or_else(|| json!([]))
+}
+
+fn write_trigger_history(ctx: &Ctx, entries: Vec<Value>) {
+    let path = trigger_history_path(ctx);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, serde_json::to_vec_pretty(&json!(entries)).unwrap_or_default());
 }
 
 fn read_config(ctx: &Ctx) -> Value {
