@@ -157,21 +157,74 @@ fn publish_progress(ctx: &Ctx, p: &crate::closing::Progress) {
     );
 }
 
+/// Announce one routed message to the floor, and let closing time see it.
+///
+/// Shared by `hive:send` and the outbox router, so a message routed by an agent
+/// counts toward the shutdown exactly as one sent through the API does.
+pub fn announce_routed(
+    state: &AppState,
+    tenant: &TenantId,
+    paths: &TenantPaths,
+    msg: &Value,
+    delivered: &[String],
+) {
+    let to = msg.get("to").and_then(|v| v.as_str()).unwrap_or("");
+    state.hub.publish(
+        tenant,
+        md_contract::ServerEvent::new(
+            md_contract::Push::HiveMessage,
+            json!({
+                "id": msg.get("id"),
+                "from": msg.get("from"),
+                "to": to,
+                "act": msg.get("act"),
+                "subject": msg.get("subject"),
+                "targets": delivered,
+                // Tints the floor envelope for mail the agent flagged for the
+                // human (now routed to the god proxy). Cosmetic — there is no
+                // approval queue behind it.
+                "needsHuman": to == "human",
+            }),
+        ),
+    );
+
+    let hive = hive::Hive::new(paths.hive_root());
+    let live: Vec<String> = state.pty.list(tenant).into_iter().map(|s| s.id).collect();
+    if let Some((progress, action)) =
+        state.closing(tenant).on_routed(msg, delivered, &hive.registry(), &live)
+    {
+        apply_action(state, tenant, paths, action);
+        state.hub.publish(
+            tenant,
+            md_contract::ServerEvent::new(md_contract::Push::AppClosingTime, &progress),
+        );
+    }
+}
+
 /// Perform whatever the controller decided. Kept here rather than inside
 /// `closing` so that module stays testable without a hive or a pty manager.
 fn apply(ctx: &Ctx, action: crate::closing::Action) {
+    apply_action(&ctx.state, &ctx.tenant, &ctx.paths, action)
+}
+
+fn apply_action(
+    state: &AppState,
+    tenant: &TenantId,
+    paths: &TenantPaths,
+    action: crate::closing::Action,
+) {
     use crate::closing::Action;
     match action {
         Action::None => {}
         // Sent as the human: closing time is the human's instruction, and the
         // god's inbox should show it as such.
         Action::Tell(msg) => {
-            hive::Hive::new(ctx.paths.hive_root()).send(&msg, "human");
+            hive::Hive::new(paths.hive_root()).send(&msg, "human");
         }
         Action::Conclude => {
-            let state = ctx.state.clone();
-            let tenant = ctx.tenant.clone();
-            let closing = ctx.state.closing(&tenant);
+            let state = state.clone();
+            let tenant = tenant.clone();
+            let closing = state.closing(&tenant);
             let generation = closing.generation();
             tokio::spawn(async move {
                 // The grace lets the god's final commit and log writes land, so
@@ -312,15 +365,7 @@ fn hive_op(op: Op, ctx: &Ctx) -> RpcResponse {
                 .as_array()
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
                 .unwrap_or_default();
-            if let Some((progress, action)) = ctx.state.closing(&ctx.tenant).on_routed(
-                &out["message"],
-                &delivered,
-                &h.registry(),
-                &live_agents(ctx),
-            ) {
-                apply(ctx, action);
-                publish_progress(ctx, &progress);
-            }
+            announce_routed(&ctx.state, &ctx.tenant, &ctx.paths, &out["message"], &delivered);
             out
         }
         _ => unreachable!("hive_op called with a non-hive op"),

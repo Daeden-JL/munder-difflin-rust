@@ -24,6 +24,11 @@ use auth::{Account, SessionStore};
 use state::{AppState, ServerConfig};
 use ws::Hub;
 
+/// How often each tenant's outboxes are swept. Matches the Electron original:
+/// fast enough that agent-to-agent mail feels immediate, slow enough that an
+/// idle floor costs nothing.
+const ROUTER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1500);
+
 /// Build the app. Kept separate from `main` so tests can drive the real router
 /// rather than a stand-in that drifts from it.
 ///
@@ -83,6 +88,29 @@ pub async fn build(cfg: &ServerConfig, accounts: Vec<Account>, sandbox: Arc<dyn 
             // aborting startup for everyone.
             if let Err(e) = hooks::serve(ctx.clone()).await {
                 tracing::error!(tenant = %ctx.tenant, error = %e, "hook socket unavailable");
+            }
+        });
+    }
+
+    // The outbox router, one task per tenant. Polling rather than filesystem
+    // watching: agents write these files by hand from arbitrary processes, and a
+    // poll is cheap and does not depend on platform watch semantics.
+    for (tenant, paths) in state.tenants.iter() {
+        let (state, tenant, paths) = (state.clone(), tenant.clone(), paths.clone());
+        tokio::spawn(async move {
+            let hive = hive::Hive::new(paths.hive_root());
+            let mut tick = tokio::time::interval(ROUTER_INTERVAL);
+            loop {
+                tick.tick().await;
+                // Blocking file IO, so it does not belong on the async worker.
+                let hive = hive.clone();
+                let Ok(routed) = tokio::task::spawn_blocking(move || hive.route_once()).await
+                else {
+                    continue;
+                };
+                for r in routed {
+                    handlers::announce_routed(&state, &tenant, &paths, &r.message, &r.delivered);
+                }
             }
         });
     }

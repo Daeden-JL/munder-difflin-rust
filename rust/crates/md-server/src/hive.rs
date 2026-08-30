@@ -45,6 +45,20 @@ fn write_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// How long a file that will not parse is given to finish being written before
+/// it is treated as malformed. Comfortably longer than a write takes, and short
+/// enough that a genuinely broken file is not retried forever.
+const PARTIAL_WRITE_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// One message the router moved out of an outbox.
+#[derive(Debug)]
+pub struct Routed {
+    pub message: Value,
+    /// Who actually took delivery — not who it was aimed at.
+    pub delivered: Vec<String>,
+}
+
+#[derive(Clone)]
 pub struct Hive {
     root: PathBuf,
 }
@@ -483,6 +497,77 @@ impl Hive {
         delivered
     }
 
+    /// One message the router moved, and who actually took it.
+    ///
+    /// Returned rather than published from here so the hive stays free of the
+    /// hub and the closing-time observer.
+    pub fn route_once(&self) -> Vec<Routed> {
+        let _g = write_lock().lock().unwrap();
+        let agents_dir = self.root.join("agents");
+        let Ok(agents) = std::fs::read_dir(&agents_dir) else { return vec![] };
+
+        let mut routed = Vec::new();
+        for agent in agents.filter_map(Result::ok) {
+            let Some(owner) = agent.file_name().to_str().map(String::from) else { continue };
+            let outbox = agent.path().join("outbox");
+            let Ok(files) = std::fs::read_dir(&outbox) else { continue };
+
+            let mut paths: Vec<PathBuf> = files
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "json"))
+                .collect();
+            paths.sort();
+
+            for path in paths {
+                let text = match std::fs::read_to_string(&path) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                let Ok(partial) = serde_json::from_str::<Value>(&text) else {
+                    self.quarantine_if_stale(&path, &outbox);
+                    continue;
+                };
+                let mut msg = normalize(&partial, &owner);
+                // The owning directory is authoritative for `from`. An agent
+                // writes these files by hand, so a self-declared sender would let
+                // any agent post as any other.
+                msg["from"] = json!(owner);
+
+                let delivered = self.route(&msg);
+                // Archive BEFORE anything else can see it, so a crash cannot
+                // deliver the same message twice on the next poll.
+                let archived = outbox.join(".sent").join(path.file_name().unwrap_or_default());
+                let _ = std::fs::create_dir_all(outbox.join(".sent"));
+                let _ = std::fs::rename(&path, &archived);
+
+                routed.push(Routed { message: msg, delivered });
+            }
+        }
+        routed
+    }
+
+    /// Quarantine a file that will not parse — but only once it has stopped
+    /// changing.
+    ///
+    /// Agents write these files by hand and not atomically, so the poller can
+    /// catch one mid-write. Quarantining immediately (as the Electron original
+    /// does) throws away a message that was about to be perfectly valid. A file
+    /// still being written is left for the next pass instead.
+    fn quarantine_if_stale(&self, path: &Path, outbox: &Path) {
+        let fresh = std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .map(|t| t.elapsed().map(|e| e < PARTIAL_WRITE_GRACE).unwrap_or(false))
+            .unwrap_or(false);
+        if fresh {
+            return;
+        }
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("message.json");
+        let _ = std::fs::create_dir_all(outbox.join(".sent"));
+        let _ = std::fs::rename(path, outbox.join(".sent").join(format!("bad-{name}")));
+        tracing::warn!(file = %path.display(), "quarantined an unparseable outbox message");
+    }
+
     fn bounce(&self, msg: &Value, god: &str, prefix: &str) {
         let mut bounced = msg.clone();
         if let Some(m) = bounced.as_object_mut() {
@@ -855,6 +940,87 @@ mod tests {
         let god = h.inbox("michael");
         assert_eq!(god.as_array().unwrap().len(), 1);
         assert!(god[0]["subject"].as_str().unwrap().starts_with("[undeliverable"));
+    }
+
+    fn with_agents(ids: &[&str]) -> Hive {
+        let h = Hive::new(tmp());
+        let mut agents = serde_json::Map::new();
+        for id in ids {
+            std::fs::create_dir_all(h.agent_dir(id).join("inbox")).unwrap();
+            std::fs::create_dir_all(h.agent_dir(id).join("outbox/.sent")).unwrap();
+            agents.insert((*id).to_string(), json!({}));
+        }
+        h.write_json(
+            &h.root.join("registry.json"),
+            &json!({ "godId": "michael", "agents": agents }),
+        )
+        .unwrap();
+        h
+    }
+
+    fn put_outbox(h: &Hive, owner: &str, name: &str, body: &str) {
+        std::fs::write(h.agent_dir(owner).join("outbox").join(name), body).unwrap();
+    }
+
+    #[test]
+    fn the_router_moves_an_outbox_message_into_the_recipient_inbox() {
+        let h = with_agents(&["jim", "pam"]);
+        put_outbox(&h, "jim", "m1.json", r#"{"to":"pam","subject":"lunch?"}"#);
+
+        let routed = h.route_once();
+        assert_eq!(routed.len(), 1);
+        assert_eq!(routed[0].delivered, vec!["pam"]);
+        assert_eq!(h.inbox("pam")[0]["subject"], "lunch?");
+
+        // Archived, so a second pass cannot deliver it twice.
+        assert!(h.agent_dir("jim").join("outbox/.sent/m1.json").exists());
+        assert!(h.route_once().is_empty());
+        assert_eq!(h.inbox("pam").as_array().unwrap().len(), 1);
+    }
+
+    /// Agents hand-write these files, so a self-declared sender would let any
+    /// agent post as any other. The owning directory is the authority.
+    #[test]
+    fn the_owning_directory_wins_over_a_declared_sender() {
+        let h = with_agents(&["jim", "pam"]);
+        put_outbox(&h, "jim", "m1.json", r#"{"to":"pam","from":"michael","subject":"do this"}"#);
+
+        h.route_once();
+        assert_eq!(h.inbox("pam")[0]["from"], "jim", "a forged sender must not stand");
+    }
+
+    /// The poller can catch a hand-written file mid-write. Quarantining it
+    /// immediately throws away a message that was about to be valid.
+    #[test]
+    fn a_half_written_message_is_left_for_the_next_pass() {
+        let h = with_agents(&["jim", "pam"]);
+        put_outbox(&h, "jim", "m1.json", r#"{"to":"pam","subj"#);
+
+        assert!(h.route_once().is_empty());
+        assert!(
+            h.agent_dir("jim").join("outbox/m1.json").exists(),
+            "a fresh unparseable file must not be quarantined yet"
+        );
+
+        // Once it finishes being written, it routes normally.
+        put_outbox(&h, "jim", "m1.json", r#"{"to":"pam","subject":"complete now"}"#);
+        assert_eq!(h.route_once().len(), 1);
+        assert_eq!(h.inbox("pam")[0]["subject"], "complete now");
+    }
+
+    /// A file that is genuinely broken must not be retried forever.
+    #[test]
+    fn a_stale_unparseable_message_is_quarantined() {
+        let h = with_agents(&["jim", "pam"]);
+        let path = h.agent_dir("jim").join("outbox/m1.json");
+        std::fs::write(&path, "not json at all").unwrap();
+        // Backdate it past the grace.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(30);
+        filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(old)).unwrap();
+
+        assert!(h.route_once().is_empty());
+        assert!(!path.exists());
+        assert!(h.agent_dir("jim").join("outbox/.sent/bad-m1.json").exists());
     }
 
     #[test]

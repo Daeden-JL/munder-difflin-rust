@@ -1,7 +1,7 @@
 # Port checklist
 
 **Status: 49 of 161 RPC channels ported, 19 deliberately never ported, 93 to go.
-9 of 28 push channels served.** Regenerate this count any time:
+10 of 28 push channels served.** Regenerate this count any time:
 
 ```sh
 cd rust && cargo test -p md-server port_coverage -- --nocapture
@@ -11,8 +11,8 @@ Done so far: the contract extractor, the Cargo workspace, the axum core
 (auth + tenancy + RPC + WebSocket), the sandbox trait with two backends, the PTY
 core, a LAN-reachable test container, the git plane (14 channels), the hive
 state layer (14), the hook server + operator control (7 RPC + 3 push), agent
-provisioning (claude only, +2 push), closing time, the `md-hook` shim, and a dev
-console at `/`.
+provisioning (claude only, +2 push), closing time, the outbox router, the
+`md-hook` shim, and a dev console at `/`.
 
 **Channel accounting changed.** `unported()` used to count channels that will
 never be ported — clipboard access, the desktop auto-updater, the app's own
@@ -33,10 +33,10 @@ update:*             → no server-side meaning: the server updates out of band
 
 ## How much until it looks like the desktop app?
 
-Not 161 channels — **24**. That is the unported set reachable from the main
+Not 161 channels — **23**. That is the unported set reachable from the main
 screen's own call sites (`App`, the store, `useHive`, `AgentStrip`, `AgentCard`,
 `CommandCenterPanel`, `OfficeFloor`, the composer, the pty views), as opposed to
-76 unported across the whole renderer including every modal and settings tab.
+75 unported across the whole renderer including every modal and settings tab.
 
 Measured, not estimated:
 
@@ -48,13 +48,14 @@ The gap is dominated by one namespace:
 
 | namespace | unported | what it blocks |
 |---|---|---|
-| `hive:` | 6 | 3 search, 2 router pushes, 1 terminal handoff |
+| `hive:` | 5 | 3 search, `enqueueToAgent`, `terminalHandoff` |
 | `hire:` | 3 | agent creation |
-| everything else | 15 | nine namespaces, 1–2 channels each |
+| everything else | 15 | eleven namespaces, 1–2 channels each |
 
-The floor can be drawn, it updates itself, agents can be spawned into it, and it
-can be wound down gracefully. What is left is a long tail: no single namespace
-now accounts for more than a quarter of it.
+The floor can be drawn, it updates itself, agents can be spawned into it, they
+can talk to each other unattended, and the floor can be wound down gracefully.
+What is left is a long tail: no namespace now accounts for more than a quarter
+of it, so the remaining work is wide rather than deep.
 
 ---
 
@@ -210,7 +211,26 @@ Steer notes carry the announcement to deeply busy agents, since the inbox brief
 only lands when one next stops; a worker hours into a task would otherwise hold
 the whole shutdown.
 
-**☐ C3d. Remaining hive — 6 channels + the other providers.**
+**☑ C3d. The outbox router — `hive:message`.**
+One polling task per tenant sweeps `agents/*/outbox/*.json` every 1.5s, routes
+each message, and archives it to `outbox/.sent` so a crash cannot deliver it
+twice. Polling rather than filesystem watching: agents write these files by hand
+from arbitrary processes, and a poll is cheap and does not depend on platform
+watch semantics. This is what lets agents talk to each other with no client
+attached.
+
+Two rules:
+- **The owning directory is authoritative for `from`.** An agent hand-writes
+  these files, so a self-declared sender would let any agent post as any other.
+  Verified: a message written into `jim/outbox` claiming `"from":"michael"`
+  arrives as from `jim`.
+- **A file that will not parse is left alone until it stops changing.** The
+  poller can catch a hand-written file mid-write; the Electron original
+  quarantines it immediately as `bad-*`, which throws away a message that was
+  about to be valid. Here it is given a 3s grace, then quarantined so a
+  genuinely broken file is not retried forever.
+
+**☐ C3e. Remaining hive — 5 channels + the other providers.**
 1. Provider bridges: `agy`, `codex`, `pi` (config-file hook shims) and the
    `qwen` reverse-proxy sidecar. Each has its own shim and config layout.
 2. Port `transcript.ts` (341) — the session JSONL reader. Load-bearing for the
@@ -218,11 +238,10 @@ the whole shutdown.
 3. Port `breaker.ts` (347) → `control:breakerState` / `control:setBreakerState`.
 4. Port `reflect.ts` (437) → `hive:searchMemory` / `hive:textSearch` /
    `hive:agentContext`.
-5. Port `emitTerminalHandoff` → `hive:terminalHandoff`, which restores the
-   PRIMARY delivery path for hookless providers; today they bounce to the god.
-6. The outbox router (`hive:message`, `hive:enqueueToAgent`): a watcher that
-   drains each agent's `outbox/` into recipients' inboxes.
-7. Restore the git single-committer (retry/backoff + stale-lock recovery); the
+5. Port `emitTerminalHandoff` → `hive:terminalHandoff` and
+   `hive:enqueueToAgent`, which restore the PRIMARY delivery path for hookless
+   providers; today they bounce to the god.
+6. Restore the git single-committer (retry/backoff + stale-lock recovery); the
    write lock is a same-process stand-in, not a replacement.
 
 **Debugging note.** `md-hook` fails OPEN — any error prints `{}` and exits 0, so

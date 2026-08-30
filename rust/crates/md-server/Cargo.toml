@@ -27,5 +27,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 futures-util = "0.3"
 
 [dev-dependencies]
+# Backdating a file's mtime, to test that a broken outbox message is eventually
+# quarantined rather than retried forever.
+filetime = "0.2"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
