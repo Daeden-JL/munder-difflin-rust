@@ -31,10 +31,18 @@ header {
 .body { flex:1; min-height:0; display:flex }
 
 /* ── roster ────────────────────────────────────────────────────────────── */
-.roster {
-  width:230px; flex:0 0 auto; overflow-y:auto; padding:.5rem;
-  border-right:1px solid var(--line); background:var(--panel);
-}
+.side { flex:0 0 auto; min-width:0; display:flex; background:var(--panel) }
+.roster { flex:1; min-width:0; overflow-y:auto; padding:.5rem }
+
+/* Draggable dividers. Wider hit area than they look, because a 1px target is
+   a target you miss. */
+.split { flex:0 0 auto; background:var(--line); position:relative; z-index:2 }
+.split::after { content:""; position:absolute; inset:-3px }
+.split-x { width:1px; cursor:col-resize }
+.split-x::after { inset:0 -4px }
+.split-y { height:1px; cursor:row-resize }
+.split-y::after { inset:-4px 0 }
+.split:hover { background:var(--accent) }
 .agent {
   width:100%; display:flex; align-items:center; gap:.5rem; text-align:left;
   background:none; border:1px solid transparent; border-radius:5px;
@@ -61,7 +69,10 @@ header {
    with its content instead of scrolling. That is what made the floor resize
    when a longer conversation was selected. */
 .main { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column }
-.floor { flex:0 0 auto; border-bottom:1px solid var(--line); background:var(--panel) }
+/* The floor fills the height the splitter gives it, and the canvas takes
+   whatever is left after the theme bar. */
+.floor-wrap { flex:0 0 auto; min-height:0; display:flex }
+.floor { flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; background:var(--panel) }
 .floor-bar { display:flex; align-items:center; gap:.5rem; padding:.35rem .7rem;
              border-bottom:1px solid var(--line) }
 .floor-bar select { background:var(--bg); color:var(--fg); border:1px solid var(--line);
@@ -73,7 +84,7 @@ header {
 /* Fixed height, so the room never changes size with the panel below it. The
    canvas keeps its own aspect and letterboxes rather than stretching, which
    would skew the pixel grid. */
-.floor canvas { display:block; width:100%; height:15rem;
+.floor canvas { display:block; flex:1; width:100%; min-height:0;
                 object-fit:contain; image-rendering:pixelated; cursor:pointer;
                 background:#0b0e13 }
 

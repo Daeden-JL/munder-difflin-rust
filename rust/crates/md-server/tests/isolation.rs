@@ -5,7 +5,17 @@
 
 use std::sync::Arc;
 
-use md_server::auth::Account;
+use md_server::accounts::{Accounts, Role};
+
+/// A populated account store for one test. Seeded directly rather than through
+/// the environment, so tests never race over process-wide state.
+fn store(dir: &std::path::Path, users: &[(&str, &str)]) -> Arc<Accounts> {
+    let a = Accounts::load(dir, None);
+    for (user, tenant) in users {
+        a.create(user, tenant, Role::Admin, "a-long-enough-secret").unwrap();
+    }
+    Arc::new(a)
+}
 use md_server::state::ServerConfig;
 use md_tenant::sandbox::PassthroughSandbox;
 use md_tenant::{Sandbox, TenantId};
@@ -30,10 +40,7 @@ fn tmp(name: &str) -> std::path::PathBuf {
 #[tokio::test]
 async fn passthrough_refuses_to_serve_two_tenants() {
     let dir = tmp("passthrough-multi");
-    let accounts = vec![
-        Account::new("a", TenantId::parse("alpha").unwrap(), "pw").unwrap(),
-        Account::new("b", TenantId::parse("beta").unwrap(), "pw").unwrap(),
-    ];
+    let accounts = store(&dir, &[("a", "alpha"), ("b", "beta")]);
     let err = md_server::build(&cfg(&dir), accounts, Arc::new(PassthroughSandbox)).await
         .expect_err("must refuse to start");
     assert!(err.to_string().contains("no isolation"), "unexpected error: {err}");
@@ -42,7 +49,7 @@ async fn passthrough_refuses_to_serve_two_tenants() {
 #[tokio::test]
 async fn passthrough_serves_a_single_tenant() {
     let dir = tmp("passthrough-single");
-    let accounts = vec![Account::new("a", TenantId::parse("alpha").unwrap(), "pw").unwrap()];
+    let accounts = store(&dir, &[("a", "alpha")]);
     assert!(md_server::build(&cfg(&dir), accounts, Arc::new(PassthroughSandbox)).await.is_ok());
 }
 
@@ -52,7 +59,7 @@ async fn passthrough_serves_a_single_tenant() {
 #[tokio::test]
 async fn building_provisions_each_tenant_home() {
     let dir = tmp("provision");
-    let accounts = vec![Account::new("a", TenantId::parse("gamma").unwrap(), "pw").unwrap()];
+    let accounts = store(&dir, &[("a", "gamma")]);
     let _app = md_server::build(&cfg(&dir), accounts, Arc::new(PassthroughSandbox)).await.unwrap();
     assert!(dir.join("gamma/.munder-difflin").is_dir());
     assert!(dir.join("gamma/workspaces").is_dir());

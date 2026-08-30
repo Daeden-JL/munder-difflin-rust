@@ -1,5 +1,6 @@
 //! Munder Difflin server: the Rust replacement for the Electron main process.
 
+pub mod accounts;
 pub mod auth;
 pub mod closing;
 pub mod control;
@@ -28,9 +29,56 @@ use axum::{Json, Router};
 use md_pty::PtyManager;
 use md_tenant::{Sandbox, TenantId, TenantPaths};
 
-use auth::{Account, SessionStore};
+use auth::SessionStore;
 use state::{AppState, ServerConfig};
 use ws::Hub;
+
+/// Start a tenant's background services: the hook socket and the outbox router.
+///
+/// Called at startup for every known tenant, and again when an admin creates an
+/// account in a NEW one — the same path both times, so a tenant created at
+/// runtime is not a second-class one missing half its machinery.
+fn spawn_tenant_services(state: &AppState, tenant: &TenantId) {
+    let Some(paths) = state.paths(tenant) else { return };
+
+    // The hook socket lives inside the tenant's own hive directory, so the path
+    // is the authorization and there is nothing further to check on a
+    // connection.
+    let ctx = hooks::HookCtx {
+        tenant: tenant.clone(),
+        hive_root: paths.hive_root(),
+        hub: state.hub.clone(),
+        control: state.control(tenant),
+    };
+    tokio::spawn(async move {
+        // A tenant whose socket cannot bind loses hook-driven UI updates, but
+        // the rest of its server keeps working — so this logs rather than
+        // aborting startup for everyone.
+        if let Err(e) = hooks::serve(ctx.clone()).await {
+            tracing::error!(tenant = %ctx.tenant, error = %e, "hook socket unavailable");
+        }
+    });
+
+    // The outbox router. Polling rather than filesystem watching: agents write
+    // these files by hand from arbitrary processes, and a poll is cheap and does
+    // not depend on platform watch semantics.
+    let (state, tenant, paths) = (state.clone(), tenant.clone(), paths.clone());
+    tokio::spawn(async move {
+        let hive = hive::Hive::new(paths.hive_root());
+        let mut tick = tokio::time::interval(ROUTER_INTERVAL);
+        loop {
+            tick.tick().await;
+            // Blocking file IO, so it does not belong on the async worker.
+            let hive = hive.clone();
+            let Ok(routed) = tokio::task::spawn_blocking(move || hive.route_once()).await else {
+                continue;
+            };
+            for r in routed {
+                handlers::announce_routed(&state, &tenant, &paths, &r.message, &r.delivered);
+            }
+        }
+    });
+}
 
 /// How often each tenant's outboxes are swept. Matches the Electron original:
 /// fast enough that agent-to-agent mail feels immediate, slow enough that an
@@ -43,12 +91,13 @@ const ROUTER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(15
 /// `async` because it spawns one hook listener per tenant and so needs a
 /// runtime. That is worth stating in the signature: a sync version would compile
 /// everywhere and then panic at startup when called from the wrong place.
-pub async fn build(cfg: &ServerConfig, accounts: Vec<Account>, sandbox: Arc<dyn Sandbox>)
+pub async fn build(cfg: &ServerConfig, accounts: Arc<accounts::Accounts>, sandbox: Arc<dyn Sandbox>)
     -> anyhow::Result<Router>
 {
     let tenants: HashMap<TenantId, TenantPaths> = accounts
-        .iter()
-        .map(|a| (a.tenant.clone(), TenantPaths::new(&cfg.data_root, a.tenant.clone())))
+        .tenants()
+        .into_iter()
+        .map(|t| (t.clone(), TenantPaths::new(&cfg.data_root, t)))
         .collect();
 
     // Refuse to start rather than discovering the misconfiguration at first
@@ -75,8 +124,9 @@ pub async fn build(cfg: &ServerConfig, accounts: Vec<Account>, sandbox: Arc<dyn 
 
     let state = AppState {
         sessions: SessionStore::new(),
-        accounts: Arc::new(accounts.into_iter().map(|a| (a.user.clone(), a)).collect()),
-        tenants: Arc::new(tenants),
+        accounts,
+        data_root: cfg.data_root.clone(),
+        tenants: Arc::new(std::sync::RwLock::new(tenants)),
         pty: Arc::new(PtyManager::new(Arc::clone(&sandbox))),
         hub: Hub::new(),
         sandbox,
@@ -85,53 +135,20 @@ pub async fn build(cfg: &ServerConfig, accounts: Vec<Account>, sandbox: Arc<dyn 
         realtime: Arc::new(realtime),
     };
 
-    // One hook listener per tenant, inside that tenant's own hive directory.
-    // The socket path is the authorization, so there is nothing further to check
-    // on the connection itself.
-    for (tenant, paths) in state.tenants.iter() {
-        let ctx = hooks::HookCtx {
-            tenant: tenant.clone(),
-            hive_root: paths.hive_root(),
-            hub: state.hub.clone(),
-            control: state.control(tenant),
-        };
-        tokio::spawn(async move {
-            // A tenant whose socket cannot bind loses hook-driven UI updates, but
-            // the rest of its server keeps working — so this logs rather than
-            // aborting startup for everyone.
-            if let Err(e) = hooks::serve(ctx.clone()).await {
-                tracing::error!(tenant = %ctx.tenant, error = %e, "hook socket unavailable");
-            }
-        });
-    }
-
-    // The outbox router, one task per tenant. Polling rather than filesystem
-    // watching: agents write these files by hand from arbitrary processes, and a
-    // poll is cheap and does not depend on platform watch semantics.
-    for (tenant, paths) in state.tenants.iter() {
-        let (state, tenant, paths) = (state.clone(), tenant.clone(), paths.clone());
-        tokio::spawn(async move {
-            let hive = hive::Hive::new(paths.hive_root());
-            let mut tick = tokio::time::interval(ROUTER_INTERVAL);
-            loop {
-                tick.tick().await;
-                // Blocking file IO, so it does not belong on the async worker.
-                let hive = hive.clone();
-                let Ok(routed) = tokio::task::spawn_blocking(move || hive.route_once()).await
-                else {
-                    continue;
-                };
-                for r in routed {
-                    handlers::announce_routed(&state, &tenant, &paths, &r.message, &r.delivered);
-                }
-            }
-        });
+    for tenant in state.tenant_ids() {
+        spawn_tenant_services(&state, &tenant);
     }
 
     let mut app = Router::new()
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/health", get(health))
+        .route("/api/me", get(me))
+        // Account management. These name `Admin` in their signatures, so the
+        // check is in the type rather than in a middleware someone has to
+        // remember to attach.
+        .route("/api/accounts", get(accounts_list).post(accounts_create))
+        .route("/api/accounts/{user}", post(accounts_update))
         // Web-native, so it lives under /api rather than /rpc: the Electron
         // bridge had no transcript channel (it showed a terminal), and adding
         // one to the generated enum would make the parity numbers describe a
@@ -179,15 +196,19 @@ async fn login(
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
 
-    // Same response whether the user is unknown or the password is wrong, so the
-    // endpoint does not enumerate accounts.
+    // Same response whether the user is unknown, disabled, or the password is
+    // wrong, so the endpoint does not enumerate accounts.
     let ok = state.accounts.get(&body.user).filter(|a| a.verify(&body.password));
     let Some(account) = ok else {
         return (axum::http::StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({ "error": "invalid credentials" }))).into_response();
     };
 
-    let token = state.sessions.create(account.tenant.clone(), account.user.clone());
+    let Ok(tenant) = TenantId::parse(&account.tenant) else {
+        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "account has an invalid tenant" }))).into_response();
+    };
+    let token = state.sessions.create(tenant.clone(), account.user.clone(), account.role.is_admin());
     // HttpOnly keeps the token away from page scripts; SameSite=Strict is the
     // CSRF control for the cookie path.
     let cookie = format!(
@@ -197,7 +218,12 @@ async fn login(
         axum::http::StatusCode::OK,
         [(axum::http::header::SET_COOKIE, cookie)],
         // Also returned in the body for non-browser clients and the WS handshake.
-        Json(serde_json::json!({ "token": token, "tenant": account.tenant.as_str() })),
+        // The role travels back so the client can show the admin panel without
+        // a second call — it is not a capability, only a hint about the UI.
+        Json(serde_json::json!({
+            "token": token, "tenant": tenant.as_str(),
+            "user": account.user, "role": account.role,
+        })),
     ).into_response()
 }
 
@@ -283,7 +309,7 @@ async fn webhook_post(
         .as_array()
         .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
-    handlers::announce_routed(&state, &tid, paths, &sent["message"], &delivered);
+    handlers::announce_routed(&state, &tid, &paths, &sent["message"], &delivered);
 
     // An endpoint named `slack` is Slack's inbound channel. Announced on its own
     // push so the floor can distinguish a chat message from a generic trigger.
@@ -399,6 +425,123 @@ async fn transcript_route(
         Ok(page) => Json(serde_json::to_value(page).unwrap_or_default()),
         Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
     }
+}
+
+/// Who am I, and may I manage accounts? Lets a reloaded client restore its own
+/// state without a second sign-in.
+async fn me(auth::Auth(session): auth::Auth) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "user": session.user, "tenant": session.tenant.as_str(), "admin": session.admin,
+    }))
+}
+
+async fn accounts_list(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    auth::Admin(_): auth::Admin,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "accounts": state.accounts.list() }))
+}
+
+#[derive(serde::Deserialize)]
+pub struct NewAccount {
+    pub user: String,
+    pub tenant: String,
+    pub password: String,
+    #[serde(default = "member")]
+    pub role: accounts::Role,
+}
+
+fn member() -> accounts::Role {
+    accounts::Role::Member
+}
+
+async fn accounts_create(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    auth::Admin(_): auth::Admin,
+    Json(body): Json<NewAccount>,
+) -> Json<serde_json::Value> {
+    // Refuse a new tenant the sandbox cannot isolate, HERE — at the point of the
+    // mistake. Without this the account is created, the server refuses to start
+    // on its next boot, and the operator learns about it from a crash loop with
+    // no obvious connection to what they did.
+    let known = state.paths(&TenantId::parse(&body.tenant).unwrap_or_else(|_| {
+        TenantId::parse("invalid").expect("a literal that always parses")
+    }));
+    if known.is_none() {
+        let count = state.tenant_ids().len() + 1;
+        if let Err(e) = state.sandbox.preflight(count) {
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": format!("cannot add the tenant '{}': {e}", body.tenant),
+            }));
+        }
+    }
+
+    match state.accounts.create(&body.user, &body.tenant, body.role, &body.password) {
+        // A new tenant needs its directories before its owner can do anything.
+        Ok(()) => {
+            // Register the tenant NOW, not at the next restart: an account that
+            // authenticates into a tenant the server does not know about reads
+            // as a broken server rather than a missing step.
+            if let Ok(t) = TenantId::parse(&body.tenant) {
+                let data_root = state.data_root.clone();
+                state.ensure_tenant(&t, &data_root);
+                spawn_tenant_services(&state, &t);
+            }
+            Json(serde_json::json!({ "ok": true }))
+        }
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct AccountPatch {
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub role: Option<accounts::Role>,
+    #[serde(default)]
+    pub disabled: Option<bool>,
+}
+
+/// Change one account.
+///
+/// A password change is the one operation a NON-admin may perform, and only on
+/// themselves — so this takes `Auth` and checks the role per field rather than
+/// demanding `Admin` for the whole route.
+async fn accounts_update(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    auth::Auth(session): auth::Auth,
+    axum::extract::Path(user): axum::extract::Path<String>,
+    Json(patch): Json<AccountPatch>,
+) -> Json<serde_json::Value> {
+    let Some(actor) = state.accounts.get(&session.user) else {
+        return Json(serde_json::json!({ "ok": false, "error": "unknown actor" }));
+    };
+
+    if let Some(p) = &patch.password {
+        if let Err(e) = state.accounts.set_password(&actor, &user, p) {
+            return Json(serde_json::json!({ "ok": false, "error": e }));
+        }
+    }
+    // Role and disabled are admin-only, whoever the target is: changing your own
+    // role is how a member would promote themselves.
+    if patch.role.is_some() || patch.disabled.is_some() {
+        if !actor.role.is_admin() {
+            return Json(serde_json::json!({ "ok": false, "error": "this action requires an admin account" }));
+        }
+        if let Some(r) = patch.role {
+            if let Err(e) = state.accounts.set_role(&user, r) {
+                return Json(serde_json::json!({ "ok": false, "error": e }));
+            }
+        }
+        if let Some(d) = patch.disabled {
+            if let Err(e) = state.accounts.set_disabled(&user, d) {
+                return Json(serde_json::json!({ "ok": false, "error": e }));
+            }
+        }
+    }
+    Json(serde_json::json!({ "ok": true }))
 }
 
 async fn logout(

@@ -442,7 +442,7 @@ pub async fn rpc_handler(
         }
     };
 
-    let Some(paths) = state.paths(&tenant).cloned() else {
+    let Some(paths) = state.paths(&tenant) else {
         // Authenticated against a tenant with no provisioned home. A
         // configuration fault, not a client error, so it is not `Forbidden`.
         return Json(RpcResponse::err(

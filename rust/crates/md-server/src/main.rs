@@ -3,10 +3,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use md_server::auth::Account;
+use md_server::accounts::Accounts;
 use md_server::state::ServerConfig;
 use md_tenant::sandbox::{ContainerSandbox, PassthroughSandbox};
-use md_tenant::{Sandbox, TenantId};
+use md_tenant::Sandbox;
 
 /// Container healthcheck: probe `/api/health` over a plain TCP request and exit
 /// 0/1. Written by hand rather than with an HTTP client so the runtime image
@@ -93,14 +93,18 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
         }
     };
 
-    // Bootstrap account for local development. A real deployment loads accounts
-    // from the control-plane store; this exists so `cargo run` works.
-    let accounts = vec![Account::new(
-        &std::env::var("MD_USER").unwrap_or_else(|_| "dev".into()),
-        TenantId::parse(&std::env::var("MD_TENANT").unwrap_or_else(|_| "dev".into()))
-            .map_err(|e| anyhow::anyhow!("{e}"))?,
-        &std::env::var("MD_PASSWORD").unwrap_or_else(|_| "dev".into()),
-    )?];
+    // Accounts are PERSISTED. The environment only seeds the first one, so a
+    // fresh server can be signed into at all — after that the store is the
+    // record, and the seed is ignored. Otherwise an operator could never revoke
+    // the bootstrap credentials without editing the deployment.
+    let accounts = Arc::new(Accounts::load(
+        &cfg.data_root,
+        Some((
+            std::env::var("MD_USER").unwrap_or_else(|_| "dev".into()),
+            std::env::var("MD_TENANT").unwrap_or_else(|_| "dev".into()),
+            std::env::var("MD_PASSWORD").unwrap_or_else(|_| "dev".into()),
+        )),
+    ));
 
     let app = md_server::build(&cfg, accounts, sandbox).await?;
 

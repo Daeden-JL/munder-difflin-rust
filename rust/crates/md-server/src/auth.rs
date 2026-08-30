@@ -9,8 +9,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use argon2::password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use argon2::Argon2;
 use axum::extract::FromRequestParts;
 use axum::http::{header, request::Parts, StatusCode};
 use md_tenant::TenantId;
@@ -20,6 +18,10 @@ use md_tenant::TenantId;
 pub struct Session {
     pub tenant: TenantId,
     pub user: String,
+    /// Carried on the session so an admin route can demand it in its signature,
+    /// the same way a tenant route demands `Tenant` — a check you must name to
+    /// get is a check you cannot forget.
+    pub admin: bool,
 }
 
 #[derive(Clone, Default)]
@@ -30,9 +32,9 @@ pub struct SessionStore {
 impl SessionStore {
     pub fn new() -> Self { Self::default() }
 
-    pub fn create(&self, tenant: TenantId, user: String) -> String {
+    pub fn create(&self, tenant: TenantId, user: String, admin: bool) -> String {
         let token = uuid::Uuid::new_v4().to_string();
-        self.inner.write().unwrap().insert(token.clone(), Session { tenant, user });
+        self.inner.write().unwrap().insert(token.clone(), Session { tenant, user, admin });
         token
     }
 
@@ -43,30 +45,6 @@ impl SessionStore {
     pub fn revoke(&self, token: &str) { self.inner.write().unwrap().remove(token); }
 }
 
-/// A stored account. Passwords are Argon2id; the hash string carries its own
-/// salt and parameters so no separate columns are needed.
-#[derive(Clone)]
-pub struct Account {
-    pub user: String,
-    pub tenant: TenantId,
-    pub password_hash: String,
-}
-
-impl Account {
-    pub fn new(user: &str, tenant: TenantId, password: &str) -> anyhow::Result<Self> {
-        let salt = SaltString::generate(&mut OsRng);
-        let hash = Argon2::default()
-            .hash_password(password.as_bytes(), &salt)
-            .map_err(|e| anyhow::anyhow!("hashing failed: {e}"))?
-            .to_string();
-        Ok(Self { user: user.to_string(), tenant, password_hash: hash })
-    }
-
-    pub fn verify(&self, password: &str) -> bool {
-        let Ok(parsed) = PasswordHash::new(&self.password_hash) else { return false };
-        Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok()
-    }
-}
 
 /// Extractor yielding the caller's tenant. Rejects with 401 when absent.
 #[derive(Debug, Clone)]
@@ -122,35 +100,45 @@ where
     }
 }
 
+/// An authenticated ADMIN session.
+///
+/// A route that manages accounts names this instead of [`Auth`]. The check is
+/// therefore in the signature, not in a middleware someone has to remember to
+/// attach to the right routes.
+pub struct Admin(pub Session);
+
+impl<S> FromRequestParts<S> for Admin
+where
+    SessionStore: axum::extract::FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, &'static str);
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let Auth(session) = Auth::from_request_parts(parts, state).await?;
+        if !session.admin {
+            // 403, not 404: the caller IS authenticated, and pretending the
+            // route does not exist would be a puzzle rather than an answer.
+            return Err((StatusCode::FORBIDDEN, "this action requires an admin account"));
+        }
+        Ok(Admin(session))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn password_verification_accepts_only_the_right_password() {
-        let t = TenantId::parse("acme").unwrap();
-        let a = Account::new("dae", t, "correct horse").unwrap();
-        assert!(a.verify("correct horse"));
-        assert!(!a.verify("Correct horse"));
-        assert!(!a.verify(""));
-    }
-
-    /// Two accounts with the same password must not share a hash, or the store
-    /// leaks which users chose the same password.
-    #[test]
-    fn hashes_are_salted_per_account() {
-        let t = TenantId::parse("acme").unwrap();
-        let a = Account::new("a", t.clone(), "same").unwrap();
-        let b = Account::new("b", t, "same").unwrap();
-        assert_ne!(a.password_hash, b.password_hash);
-    }
+    // Password hashing and salting are tested in `accounts`, which owns the
+    // account type. What belongs here is session lifetime.
 
     #[test]
     fn revoked_sessions_stop_resolving() {
         let store = SessionStore::new();
-        let tok = store.create(TenantId::parse("acme").unwrap(), "dae".into());
+        let tok = store.create(TenantId::parse("acme").unwrap(), "dae".into(), false);
         assert!(store.get(&tok).is_some());
         store.revoke(&tok);
         assert!(store.get(&tok).is_none());
     }
 }
+

@@ -504,13 +504,26 @@ fn draw(
         ctx.fill_rect(0.0, l.wall_depth - 2.0, ROOM_W, 2.0);
     }
 
-    let fcol = l.furniture_color.as_deref().unwrap_or("#a08d70");
-    for [x, y, w, h] in &l.furniture {
-        ctx.set_fill_style_str(fcol);
-        ctx.fill_rect(*x, *y, *w, *h);
-        // A darker lip along the front edge gives the slab some depth.
-        ctx.set_fill_style_str("rgba(0,0,0,0.22)");
-        ctx.fill_rect(*x, y + h - 2.0, *w, 2.0);
+    // Scenery, in order — later props sit on top, which is how a theme author
+    // layers a console onto a dais without needing a z-index.
+    for p in &l.props {
+        ctx.set_fill_style_str(&p.color);
+        if p.round {
+            ctx.begin_path();
+            let _ = ctx.ellipse(
+                p.x + p.w / 2.0, p.y + p.h / 2.0, p.w / 2.0, p.h / 2.0,
+                0.0, 0.0, std::f64::consts::TAU,
+            );
+            ctx.fill();
+        } else {
+            ctx.fill_rect(p.x, p.y, p.w, p.h);
+        }
+        // A darker front lip is what makes a flat slab read as a surface you
+        // could put something on.
+        if p.lip {
+            ctx.set_fill_style_str("rgba(0,0,0,0.24)");
+            ctx.fill_rect(p.x, p.y + p.h - 2.0, p.w, 2.0);
+        }
     }
 
     for st in &l.stations {

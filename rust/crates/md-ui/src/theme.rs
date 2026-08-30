@@ -98,6 +98,28 @@ fn default_w() -> f64 {
     30.0
 }
 
+/// One piece of scenery.
+///
+/// A rectangle with a colour and an optional darker lip along its front edge —
+/// which is what makes a flat slab read as a surface you could put a mug on.
+/// Deliberately not a sprite: a room built from primitives is a room a theme
+/// author can write in a text editor.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Prop {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub color: String,
+    /// A front lip, for anything with a top surface.
+    #[serde(default)]
+    pub lip: bool,
+    /// Draw as an ellipse: rugs, hatches, the warp core.
+    #[serde(default)]
+    pub round: bool,
+}
+
 /// The room a theme is set in.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -110,11 +132,10 @@ pub struct Layout {
     /// Skirting / trim between the two planes.
     #[serde(default)]
     pub trim: Option<String>,
-    /// Desks or consoles agents idle at, as `[x, y, w, h]` in room pixels.
+    /// Everything drawn on the floor that is not a station: desks, consoles,
+    /// crates, rugs, bulkheads. Painted in order, so later entries sit on top.
     #[serde(default)]
-    pub furniture: Vec<[f64; 4]>,
-    #[serde(default)]
-    pub furniture_color: Option<String>,
+    pub props: Vec<Prop>,
     pub stations: Vec<Station>,
     /// Where agents wander when idle: `[x0, y0, x1, y1]`. Keeps them off the
     /// walls and out of the furniture.
@@ -152,30 +173,63 @@ impl Theme {
     }
 }
 
-/// Assign archetypes to agents.
+/// Assign an archetype to every agent, preferring a character whose name
+/// matches the agent's own.
 ///
-/// **The orchestrator takes `leader`.** Everyone else follows in stable id
-/// order. Without the first rule the god landed wherever the alphabet put it —
-/// on a floor of michael/dwight/jim/pam/ryan, the orchestrator came out dressed
-/// as Jim while Dwight wore Michael's suit.
+/// **The orchestrator takes `leader`** among the unmatched. Without that rule
+/// the god landed wherever the alphabet put it — on a floor of
+/// michael/dwight/jim the orchestrator came out dressed as Jim while Dwight
+/// wore Michael's suit.
 ///
-/// The order for everyone else must be stable — id, not display name — or the
-/// floor reshuffles whenever an agent is renamed or the roster re-sorted.
-pub fn assign(ids: &[String], god: Option<&str>) -> HashMap<String, String> {
-    let mut ordered: Vec<&String> = ids.iter().collect();
-    ordered.sort();
-    if let Some(g) = god {
-        if let Some(i) = ordered.iter().position(|id| id.as_str() == g) {
-            let leader = ordered.remove(i);
-            ordered.insert(0, leader);
+/// The agents on a Munder Difflin floor are usually NAMED after the cast, so an
+/// agent called Pam dressed as Kevin reads as a bug even when the ordering is
+/// correct. Where a theme has a character of the same name, that binding wins;
+/// everyone else fills the remaining slots in the usual order.
+///
+/// `names` is `(id, display name)`. Matching is case-insensitive and on the
+/// first word, so "Pam Beesly" still finds Pam.
+pub fn assign_in(
+    ids: &[String],
+    god: Option<&str>,
+    theme: Option<&Theme>,
+) -> HashMap<String, String> {
+    let mut out: HashMap<String, String> = HashMap::new();
+    let mut taken: Vec<String> = Vec::new();
+
+    if let Some(t) = theme {
+        for id in ids {
+            // The agent id doubles as its name on this floor.
+            let first = id.split(['-', '_', ' ']).next().unwrap_or(id).to_lowercase();
+            if let Some((slot, _)) = t.cast.iter().find(|(slot, c)| {
+                !taken.contains(slot)
+                    && c.display.split_whitespace().next().unwrap_or("").to_lowercase() == first
+            }) {
+                out.insert(id.clone(), slot.clone());
+                taken.push(slot.clone());
+            }
         }
     }
-    ordered
-        .into_iter()
-        .enumerate()
-        .map(|(i, id)| (id.clone(), ARCHETYPES[i % ARCHETYPES.len()].to_string()))
-        .collect()
+
+    // Everyone unmatched fills the remaining slots, god first.
+    let mut rest: Vec<&String> = ids.iter().filter(|id| !out.contains_key(*id)).collect();
+    rest.sort();
+    if let Some(g) = god {
+        if let Some(i) = rest.iter().position(|id| id.as_str() == g) {
+            let leader = rest.remove(i);
+            rest.insert(0, leader);
+        }
+    }
+    let mut free: Vec<&str> =
+        ARCHETYPES.iter().copied().filter(|a| !taken.iter().any(|t| t == a)).collect();
+    if free.is_empty() {
+        free = ARCHETYPES.to_vec();
+    }
+    for (i, id) in rest.into_iter().enumerate() {
+        out.insert(id.clone(), free[i % free.len()].to_string());
+    }
+    out
 }
+
 
 /// The built-in Office theme, as data.
 ///
@@ -213,9 +267,49 @@ mod tests {
     #[test]
     fn archetype_assignment_is_stable_across_a_theme_switch() {
         let ids: Vec<String> = ["michael", "dwight", "jim"].iter().map(|s| s.to_string()).collect();
-        let a = assign(&ids, Some("michael"));
-        let b = assign(&ids, Some("michael"));
+        let a = assign_in(&ids, Some("michael"), None);
+        let b = assign_in(&ids, Some("michael"), None);
         assert_eq!(a, b);
+    }
+
+    /// An agent named after a member of the cast should BE that member. Without
+    /// this, Pam came out dressed as Kevin — correct by ordering, wrong to look
+    /// at.
+    #[test]
+    fn an_agent_named_after_a_character_gets_that_character() {
+        let themes = builtin();
+        let office = themes.iter().find(|t| t.id == "office").unwrap();
+        let ids: Vec<String> = ["michael", "dwight", "jim", "pam", "ryan"]
+            .iter().map(|s| s.to_string()).collect();
+
+        let out = assign_in(&ids, Some("michael"), Some(office));
+        let who = |id: &str| office.character(&out[id]).unwrap().display.clone();
+        assert_eq!(who("pam"), "Pam", "an agent named Pam must be Pam");
+        assert_eq!(who("michael"), "Michael");
+        assert_eq!(who("dwight"), "Dwight");
+        assert_eq!(who("jim"), "Jim");
+        // Ryan is not in the cast, so he fills a remaining slot rather than
+        // going undressed.
+        assert!(!who("ryan").is_empty());
+
+        // Nobody may be assigned twice, or two agents share one face.
+        let mut slots: Vec<&String> = out.values().collect();
+        let n = slots.len();
+        slots.sort();
+        slots.dedup();
+        assert_eq!(slots.len(), n, "two agents share an archetype");
+    }
+
+    /// In a theme with no matching names, ordering is all there is — and the
+    /// orchestrator still leads.
+    #[test]
+    fn a_theme_with_no_matching_names_falls_back_to_order() {
+        let themes = builtin();
+        let serenity = themes.iter().find(|t| t.id == "serenity").unwrap();
+        let ids: Vec<String> = ["michael", "dwight", "jim"].iter().map(|s| s.to_string()).collect();
+        let out = assign_in(&ids, Some("michael"), Some(serenity));
+        assert_eq!(out["michael"], "leader");
+        assert_eq!(serenity.character(&out["michael"]).unwrap().display, "Mal");
     }
 
     /// The orchestrator wears the leader's face. Without this it landed
@@ -224,14 +318,14 @@ mod tests {
     #[test]
     fn the_orchestrator_takes_the_leader_slot() {
         let ids: Vec<String> = ["michael", "dwight", "jim"].iter().map(|s| s.to_string()).collect();
-        let out = assign(&ids, Some("michael"));
+        let out = assign_in(&ids, Some("michael"), None);
         assert_eq!(out["michael"], "leader");
         // The rest keep stable id order behind it.
         assert_eq!(out["dwight"], "second");
         assert_eq!(out["jim"], "operator");
 
         // With no god named, plain id order.
-        let out = assign(&ids, None);
+        let out = assign_in(&ids, None, None);
         assert_eq!(out["dwight"], "leader");
     }
 
@@ -239,7 +333,7 @@ mod tests {
     #[test]
     fn more_agents_than_slots_wrap_rather_than_going_unassigned() {
         let ids: Vec<String> = (0..ARCHETYPES.len() + 3).map(|i| format!("a{i:02}")).collect();
-        let out = assign(&ids, None);
+        let out = assign_in(&ids, None, None);
         assert_eq!(out.len(), ids.len());
         assert!(out.values().all(|v| ARCHETYPES.contains(&v.as_str())));
         assert_eq!(out["a00"], out[&format!("a{:02}", ARCHETYPES.len())], "the roster wraps");

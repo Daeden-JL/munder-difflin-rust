@@ -64,6 +64,13 @@ fn App() -> impl IntoView {
     // Which pane fills the main area. The floor and the conversation are the
     // product; files are a tool alongside them.
     let pane = RwSignal::new("chat".to_string());
+    // How tall the floor is, as a percentage of the main column. The floor is
+    // the product, so it gets most of the room by default; the panel below it
+    // is there when you want it. Dragging the divider changes the split, so the
+    // balance is the user's rather than mine.
+    let floor_pct = RwSignal::new(62.0f64);
+    // Sidebar width, likewise draggable.
+    let side_px = RwSignal::new(230.0f64);
     let root = RwSignal::new("~".to_string());
     // Derived ONCE and shared: the roster and the floor must not compute this
     // separately, or a face beside a name stops being the figure on the floor.
@@ -71,7 +78,11 @@ fn App() -> impl IntoView {
         let list = agents.get();
         let ids: Vec<String> = list.iter().map(|a| a.id.clone()).collect();
         let god = list.iter().find(|a| a.is_god).map(|a| a.id.clone());
-        theme::assign(&ids, god.as_deref())
+        // Theme-aware: an agent named after a member of the cast should BE
+        // that member, which is only knowable with the theme in hand.
+        let themes = theme::builtin();
+        let t = themes.get(theme.get() % themes.len().max(1));
+        theme::assign_in(&ids, god.as_deref(), t)
     });
 
     // A successful authenticated call is the session probe: a cookie from an
@@ -186,10 +197,24 @@ fn App() -> impl IntoView {
                     }>"closing time"</button>
                 </header>
                 <div class="body">
-                    <Roster agents selected theme slots=archetypes/>
+                    <div class="side" style=move || format!("width:{}px", side_px.get())>
+                        <Roster agents selected theme slots=archetypes/>
+                    </div>
+                    <Splitter axis="x" on_drag=move |dx| {
+                        side_px.update(|w| *w = (*w + dx).clamp(150.0, 480.0));
+                    }/>
                     <div class="main">
-                        <Floor occupants=Signal::derive(move || occupants(agents.get(), &archetypes.get()))
-                               theme selected activity=tool_activity archetypes/>
+                        <div class="floor-wrap" style=move || format!("height:{}%", floor_pct.get())>
+                            <Floor occupants=Signal::derive(move || occupants(agents.get(), &archetypes.get()))
+                                   theme selected activity=tool_activity archetypes/>
+                        </div>
+                        <Splitter axis="y" on_drag=move |dy| {
+                            // Percentage rather than pixels, so the split holds
+                            // its proportions when the window is resized.
+                            let h = window().inner_height().ok()
+                                .and_then(|v| v.as_f64()).unwrap_or(800.0).max(200.0);
+                            floor_pct.update(|p| *p = (*p + dy / h * 100.0).clamp(20.0, 85.0));
+                        }/>
                         <Show
                             when=move || pane.get() == "chat"
                             fallback=move || view! { <Editor root/> }
@@ -230,6 +255,39 @@ fn occupants(mut agents: Vec<Agent>, slots: &std::collections::HashMap<String, S
             live: a.live,
         })
         .collect()
+}
+
+/// A draggable divider between two panels.
+///
+/// Pointer events with capture, not mouse events on `document`: capture keeps
+/// the drag attached to this element even when the pointer outruns it, which is
+/// exactly what happens when someone throws a divider across the window.
+#[component]
+fn Splitter(axis: &'static str, on_drag: impl Fn(f64) + 'static) -> impl IntoView {
+    let last = RwSignal::new(Option::<f64>::None);
+    let class = if axis == "x" { "split split-x" } else { "split split-y" };
+
+    view! {
+        <div class=class
+            on:pointerdown=move |e: leptos::ev::PointerEvent| {
+                last.set(Some(if axis == "x" { e.client_x() as f64 } else { e.client_y() as f64 }));
+                if let Some(t) = e.target() {
+                    use wasm_bindgen::JsCast;
+                    if let Ok(el) = t.dyn_into::<web_sys::Element>() {
+                        let _ = el.set_pointer_capture(e.pointer_id());
+                    }
+                }
+            }
+            on:pointermove=move |e: leptos::ev::PointerEvent| {
+                let Some(prev) = last.get() else { return };
+                let now = if axis == "x" { e.client_x() as f64 } else { e.client_y() as f64 };
+                on_drag(now - prev);
+                last.set(Some(now));
+            }
+            on:pointerup=move |_| last.set(None)
+            on:pointercancel=move |_| last.set(None)
+        ></div>
+    }
 }
 
 #[component]

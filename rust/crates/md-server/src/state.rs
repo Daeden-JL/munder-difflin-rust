@@ -2,13 +2,14 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use axum::extract::FromRef;
 use md_pty::PtyManager;
 use md_tenant::{Sandbox, TenantId, TenantPaths};
 
-use crate::auth::{Account, SessionStore};
+use crate::accounts::Accounts;
+use crate::auth::SessionStore;
 use crate::closing::Closing;
 use crate::realtime::Realtime;
 use crate::control::Control;
@@ -17,8 +18,18 @@ use crate::ws::Hub;
 #[derive(Clone)]
 pub struct AppState {
     pub sessions: SessionStore,
-    pub accounts: Arc<HashMap<String, Account>>,
-    pub tenants: Arc<HashMap<TenantId, TenantPaths>>,
+    /// The persisted account store. Was a HashMap seeded from the environment,
+    /// which could not be changed without a restart or revoked at all.
+    pub accounts: Arc<Accounts>,
+    /// Needed to provision a tenant when an admin creates its first account.
+    pub data_root: PathBuf,
+    /// Tenants, and where their data lives.
+    ///
+    /// Behind a lock because an admin can create an account in a NEW tenant
+    /// while the server runs — with a frozen map that account would
+    /// authenticate and then find no home, which reads as a broken server
+    /// rather than a missing step.
+    pub tenants: Arc<RwLock<HashMap<TenantId, TenantPaths>>>,
     pub pty: Arc<PtyManager>,
     pub hub: Hub,
     pub sandbox: Arc<dyn Sandbox>,
@@ -34,8 +45,26 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn paths(&self, tenant: &TenantId) -> Option<&TenantPaths> {
-        self.tenants.get(tenant)
+    pub fn paths(&self, tenant: &TenantId) -> Option<TenantPaths> {
+        self.tenants.read().unwrap().get(tenant).cloned()
+    }
+
+    /// Register a tenant discovered after startup, provisioning its
+    /// directories. Idempotent: re-registering an existing tenant is a no-op.
+    pub fn ensure_tenant(&self, tenant: &TenantId, data_root: &std::path::Path) -> TenantPaths {
+        if let Some(p) = self.paths(tenant) {
+            return p;
+        }
+        let paths = TenantPaths::new(data_root, tenant.clone());
+        let _ = std::fs::create_dir_all(paths.harness_home());
+        let _ = std::fs::create_dir_all(paths.workspaces());
+        self.tenants.write().unwrap().insert(tenant.clone(), paths.clone());
+        tracing::info!(%tenant, "registered a tenant created at runtime");
+        paths
+    }
+
+    pub fn tenant_ids(&self) -> Vec<TenantId> {
+        self.tenants.read().unwrap().keys().cloned().collect()
     }
 
     /// Every provisioned tenant has a registry, so this cannot legitimately miss.
