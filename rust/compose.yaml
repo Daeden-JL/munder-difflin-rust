@@ -29,13 +29,13 @@ services:
       # Delete these two lines (and restart) to serve plain HTTP instead.
       MD_TLS_CERT: "/etc/md/certs/server.crt"
       MD_TLS_KEY: "/etc/md/certs/server.key"
-      # The dev console. Replaced by the built WASM client once it exists.
+      # The built Leptos client. The dev console lives on at /console.html.
       MD_STATIC_DIR: "/srv/web"
       RUST_LOG: "md_server=info,tower_http=info"
     volumes:
       - md-data:/home/md/data
       - ./certs:/etc/md/certs:ro
-      - ./web:/srv/web:ro
+      - ./web/dist:/srv/web:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "/usr/local/bin/md-server", "--health-check"]

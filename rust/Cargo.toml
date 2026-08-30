@@ -1,11 +1,21 @@
 [workspace]
 resolver = "2"
+# md-ui targets wasm32 and is built by trunk. Excluding it from the default
+# members keeps `cargo build`/`test` at the repo root working on the host target.
+default-members = [
+    "crates/md-contract",
+    "crates/md-pty",
+    "crates/md-tenant",
+    "crates/md-server",
+    "crates/md-hook",
+]
 members = [
     "crates/md-contract",
     "crates/md-pty",
     "crates/md-tenant",
     "crates/md-server",
     "crates/md-hook",
+    "crates/md-ui",
 ]
 
 [workspace.package]

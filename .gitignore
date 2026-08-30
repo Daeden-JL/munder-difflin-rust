@@ -33,3 +33,4 @@ docs/blog-preview-*/
 rust/target/
 rust/.env
 rust/certs/
+rust/web/dist/

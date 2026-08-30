@@ -1,0 +1,24 @@
+[package]
+name = "md-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The WASM client. Built by trunk, not by `cargo build --workspace` — it targets
+# wasm32 and pulls a different dependency set, so it is excluded from the
+# workspace default members and built explicitly.
+[dependencies]
+md-contract = { path = "../md-contract" }
+leptos = { version = "0.7", features = ["csr"] }
+serde.workspace = true
+serde_json.workspace = true
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+gloo-net = { version = "0.6", features = ["http", "websocket"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+futures = "0.3"
+console_error_panic_hook = "0.1"
+
+[dependencies.web-sys]
+version = "0.3"
+features = ["HtmlInputElement", "HtmlTextAreaElement", "Element", "ScrollToOptions", "Window"]

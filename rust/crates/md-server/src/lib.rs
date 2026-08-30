@@ -10,6 +10,7 @@ pub mod handlers;
 pub mod rpc;
 pub mod spawn;
 pub mod state;
+pub mod transcript;
 pub mod ws;
 
 use std::collections::HashMap;
@@ -119,6 +120,11 @@ pub async fn build(cfg: &ServerConfig, accounts: Vec<Account>, sandbox: Arc<dyn 
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/health", get(health))
+        // Web-native, so it lives under /api rather than /rpc: the Electron
+        // bridge had no transcript channel (it showed a terminal), and adding
+        // one to the generated enum would make the parity numbers describe a
+        // contract that never existed.
+        .route("/api/transcript", get(transcript_route))
         .route("/rpc/{channel}", post(rpc::rpc_handler))
         .route("/ws", get(ws::ws_handler));
 
@@ -172,6 +178,48 @@ async fn login(
         // Also returned in the body for non-browser clients and the WS handshake.
         Json(serde_json::json!({ "token": token, "tenant": account.tenant.as_str() })),
     ).into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct TranscriptQuery {
+    /// Which agent's session to read.
+    pub agent: String,
+    /// Byte offset from the previous page. Absent means start at the beginning.
+    #[serde(default)]
+    pub cursor: u64,
+}
+
+/// The conversation view's source.
+///
+/// Resolves the agent's session through the registry — `cwd` plus the
+/// `sessionId` the hook server recorded — so the client never handles a
+/// filesystem path.
+async fn transcript_route(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    auth::Tenant(tenant): auth::Tenant,
+    axum::extract::Query(q): axum::extract::Query<TranscriptQuery>,
+) -> Json<serde_json::Value> {
+    let Some(paths) = state.paths(&tenant) else {
+        return Json(serde_json::json!({ "error": "unknown tenant" }));
+    };
+    let reg = hive::Hive::new(paths.hive_root()).registry();
+    let agent = &reg["agents"][&q.agent];
+    let (Some(cwd), Some(session)) = (
+        agent["cwd"].as_str(),
+        agent["sessionId"].as_str().filter(|s| !s.is_empty()),
+    ) else {
+        // Not an error: an agent that has not reported a session yet simply has
+        // nothing to show, and the view polls until it does.
+        return Json(serde_json::json!({ "entries": [], "cursor": 0, "more": false, "waiting": true }));
+    };
+
+    let Some(file) = transcript::session_file(&paths.home(), cwd, session) else {
+        return Json(serde_json::json!({ "entries": [], "cursor": 0, "more": false, "waiting": true }));
+    };
+    match transcript::read(&file, q.cursor) {
+        Ok(page) => Json(serde_json::to_value(page).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
 }
 
 async fn logout(

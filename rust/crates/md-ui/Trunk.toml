@@ -1,0 +1,4 @@
+[build]
+target = "index.html"
+# Built into the directory the server serves as MD_STATIC_DIR.
+dist = "../../web/dist"

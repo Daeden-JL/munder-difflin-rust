@@ -288,6 +288,42 @@ app. This is the gate: the backend must be proven before any UI is rewritten.
 
 ## Phase D — the WASM UI
 
+### ☑ D1. Leptos shell + transport — **done**
+`md-ui`, a Leptos CSR client built by `rust/build-ui.sh` into `rust/web/dist`
+(478 KB wasm). Login, roster, conversation, composer; RPC over HTTP and pushes
+over one reconnecting WebSocket. The session cookie stays HttpOnly and the
+client never holds the token — a token in WASM memory is reachable from any
+script on the page.
+
+Not built inside the Docker image: trunk pulls a wasm toolchain and `wasm-opt`,
+which would add minutes to every server rebuild for something that changes far
+less often. The dev console remains at `/console.html`.
+
+### ☑ D1b. Composer + conversation view — **done**, see task #16
+The replacement for the terminal. Entries come from the agent's own session
+transcript — real tool names, arguments and results — instead of from regexing
+escape sequences off a screen. The composer types into the agent's PTY, because
+that is how you talk to a CLI: the PTY is still the transport, it is simply
+never rendered.
+
+Reading is incremental. The client passes back the byte offset it last saw, so
+following a long session stays cheap, and a read stops on the last newline —
+a record still being written is left for the next call rather than half-parsed.
+
+Verified against a REAL Claude Code transcript, not a synthetic one. Two things
+that finding turned up:
+
+- **Most records are not conversation.** A live file also carries `ai-title`,
+  `agent-name`, `mode`, `permission-mode`, `queue-operation`,
+  `file-history-snapshot`, `system`, `attachment` and `last-prompt` records,
+  plus `isMeta` / `isVisibleInTranscriptOnly` messages. All correctly skipped:
+  14 real records yielded exactly the 2 that were conversation.
+- **Thinking text is never persisted.** All 116 thinking blocks in a real
+  session file carry a signature and an empty string. So the "show thinking"
+  control appears only when there is thinking to show — otherwise it would be a
+  control that provably does nothing. The parser still handles it, for a CLI
+  version that does persist it.
+
 ### ☑ D0. Terminal emulator — **descoped** (decision, 2026-08-29)
 The brief is a composer for describing tasks, not a terminal. That removes what
 was the highest-risk item in the conversion — no `alacritty_terminal`, no
@@ -319,10 +355,6 @@ would show only stripped text. Keep the dev console's raw sink for that case.
 **Prerequisite this creates:** C3 must land the hook server and transcript
 reader, which were previously "nice to have" behind the terminal. They are now
 load-bearing for the UI.
-
-### ☐ D1. Leptos shell + generated client
-Scaffold `md-ui`, generate a typed client from `contract/manifest.json`, add a
-reconnecting WebSocket, port the zustand store to signals.
 
 ### ☐ D2. Port the React tree — ~36.5k LOC, 80 components
 The long tail. Sequence by dependency: layout → command centre → agent list →
