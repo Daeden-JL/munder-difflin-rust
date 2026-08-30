@@ -105,6 +105,25 @@ pub enum Op {
     TriggerHistoryList,
     TriggerHistoryClear,
     TriggerHistoryDecide,
+    GithubIssues,
+    GithubCiRuns,
+    ToolsStatus,
+    SkillsLocal,
+    SkillsUninstall,
+    MissionsList,
+    MissionsSave,
+    OrgGetTrigger,
+    OrgSetTrigger,
+    WorkersList,
+    WorkersStop,
+    SlackSetConfig,
+    SlackStatus,
+    SlackReply,
+    TelemetrySnapshot,
+    TelemetrySpans,
+    TelemetryUsage,
+    HiveAgentDirectory,
+    HiveAgentContext,
 }
 
 /// What this server intends to do about a channel.
@@ -172,6 +191,24 @@ pub const fn plan(rpc: Rpc) -> Plan {
             Dropped("webhook endpoints are routes on this server — always on")
         }
         Rpc::WebhookSetConfig => Dropped("no separate webhook server to configure"),
+        // Slack's inbound listener is a route on this server, for the same
+        // reason webhooks are: there is no second server to run.
+        Rpc::SlackStart | Rpc::SlackStop => {
+            Dropped("the Slack endpoint is a route on this server — always on")
+        }
+        // The reply helper is a script the harness drops next to an agent so it
+        // can answer a Slack thread. The web port hands agents a socket, not a
+        // filesystem path into the app bundle.
+        Rpc::SlackReplyScriptPath => Dropped("agents reply through the hive, not a bundled script"),
+        // The harness home belongs to the tenant and is provisioned at boot; a
+        // client moving it would move another tenant's data by mistake.
+        Rpc::ConfigChangeHome => Dropped("the tenant's home is provisioned by the server"),
+        Rpc::WindowNewFloor => Dropped("open another browser tab"),
+        // Marketing content fetched for the desktop app's welcome screen.
+        Rpc::HeroPayload => Dropped("desktop welcome-screen content"),
+        // Opens a native picker. The ingest half is `hire:drainPending`.
+        Rpc::HireOpenFile => Client("upload the manifest instead"),
+        Rpc::SkillsReveal => Dropped("reveal-in-file-manager would act on the server"),
         Rpc::UpdateCheckNow
         | Rpc::UpdateCurrent
         | Rpc::UpdateDownload
@@ -278,6 +315,25 @@ pub const fn handler_for(rpc: Rpc) -> Option<Op> {
         Rpc::TriggerHistoryList => Op::TriggerHistoryList,
         Rpc::TriggerHistoryClear => Op::TriggerHistoryClear,
         Rpc::TriggerHistoryDecide => Op::TriggerHistoryDecide,
+        Rpc::GithubIssues => Op::GithubIssues,
+        Rpc::GithubCiRuns => Op::GithubCiRuns,
+        Rpc::ToolsStatus => Op::ToolsStatus,
+        Rpc::SkillsLocal => Op::SkillsLocal,
+        Rpc::SkillsUninstall => Op::SkillsUninstall,
+        Rpc::MissionsList => Op::MissionsList,
+        Rpc::MissionsSave => Op::MissionsSave,
+        Rpc::OrgGetTrigger => Op::OrgGetTrigger,
+        Rpc::OrgSetTrigger => Op::OrgSetTrigger,
+        Rpc::WorkersList => Op::WorkersList,
+        Rpc::WorkersStop => Op::WorkersStop,
+        Rpc::SlackSetConfig => Op::SlackSetConfig,
+        Rpc::SlackStatus => Op::SlackStatus,
+        Rpc::SlackReply => Op::SlackReply,
+        Rpc::TelemetrySnapshot => Op::TelemetrySnapshot,
+        Rpc::TelemetrySpans => Op::TelemetrySpans,
+        Rpc::TelemetryUsage => Op::TelemetryUsage,
+        Rpc::HiveAgentDirectory => Op::HiveAgentDirectory,
+        Rpc::HiveAgentContext => Op::HiveAgentContext,
         _ => return None,
     })
 }
@@ -371,7 +427,7 @@ mod tests {
         for (r, why) in not_applicable() {
             println!("  never {} — {}", r.as_str(), why);
         }
-        assert_eq!(done, 88, "handler count changed; update this number intentionally");
+        assert_eq!(done, 107, "handler count changed; update this number intentionally");
         assert_eq!(done + todo + na, total, "every channel must have exactly one plan");
     }
 
@@ -422,6 +478,7 @@ mod tests {
             Op::KgList, Op::KgGet, Op::KgSearch, Op::KgRemove, Op::KgStatus, Op::KgIngestFiles, Op::RosterWrite, Op::MemoryReflectNow,
             Op::IntegrationsList, Op::IntegrationsTemplates, Op::IntegrationsUpsert, Op::IntegrationsSetSecret, Op::IntegrationsRemove, Op::IntegrationsTest, Op::ProviderKeySet, Op::ProviderKeyHas, Op::ProviderKeyClear, Op::TriggersGetContext, Op::TriggersSetContext,
             Op::WebhooksList, Op::WebhooksSave, Op::WebhooksDelete, Op::WebhooksGenerateSecret, Op::WebhooksStatus, Op::WebhookStatus, Op::WebhookGenerateSecret, Op::TriggerHistoryList, Op::TriggerHistoryClear, Op::TriggerHistoryDecide,
+            Op::GithubIssues, Op::GithubCiRuns, Op::ToolsStatus, Op::SkillsLocal, Op::SkillsUninstall, Op::MissionsList, Op::MissionsSave, Op::OrgGetTrigger, Op::OrgSetTrigger, Op::WorkersList, Op::WorkersStop, Op::SlackSetConfig, Op::SlackStatus, Op::SlackReply, Op::TelemetrySnapshot, Op::TelemetrySpans, Op::TelemetryUsage, Op::HiveAgentDirectory, Op::HiveAgentContext,
         ];
         for op in all {
             assert!(ops.contains(&op), "{op:?} is not reachable from any channel");

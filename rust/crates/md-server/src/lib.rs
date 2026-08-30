@@ -10,6 +10,7 @@ pub mod hive;
 pub mod integrations;
 pub mod knowledge;
 pub mod handlers;
+pub mod misc;
 pub mod rpc;
 pub mod secrets;
 pub mod spawn;

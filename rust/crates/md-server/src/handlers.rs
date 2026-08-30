@@ -247,6 +247,160 @@ pub async fn run(op: Op, ctx: Ctx) -> RpcResponse {
                 json!({ "enabled": false, "thresholdPct": 80, "action": "notify" })
             }))
         }
+        Op::GithubIssues => {
+            let cwd = tri!(ctx.resolve(&tri!(ctx.arg::<String>(0))));
+            RpcResponse::ok(crate::misc::github_issues(&cwd).await)
+        }
+        Op::GithubCiRuns => {
+            let cwd = tri!(ctx.resolve(&tri!(ctx.arg::<String>(0))));
+            RpcResponse::ok(crate::misc::github_ci_runs(&cwd).await)
+        }
+        Op::ToolsStatus => RpcResponse::ok(crate::misc::tools_status()),
+        Op::SkillsLocal => {
+            let cwd = tri!(ctx.resolve(&ctx.opt_arg::<String>(0).unwrap_or_else(|| "~".into())));
+            RpcResponse::ok(crate::misc::local_skills(&ctx.paths.home(), &cwd))
+        }
+        Op::SkillsUninstall => {
+            let path = tri!(ctx.resolve(&tri!(ctx.arg::<String>(0))));
+            // Only ever a skill directory, and only inside the tenant. Without
+            // the manifest check this would be an arbitrary recursive delete
+            // reachable from the client.
+            if !path.join("SKILL.md").is_file() {
+                return RpcResponse::ok(json!({ "ok": false, "error": "not a skill directory" }));
+            }
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => RpcResponse::ok(json!({ "ok": true })),
+                Err(e) => RpcResponse::ok(json!({ "ok": false, "error": e.to_string() })),
+            }
+        }
+
+        Op::MissionsList => RpcResponse::ok(
+            read_config(&ctx).get("missions").cloned().unwrap_or_else(|| json!([])),
+        ),
+        Op::MissionsSave => {
+            let missions: Value = tri!(ctx.arg(0));
+            let mut cfg = read_config(&ctx);
+            cfg["missions"] = missions;
+            match write_config(&ctx, &cfg) {
+                Ok(()) => {
+                    ctx.state.hub.publish(
+                        &ctx.tenant,
+                        md_contract::ServerEvent::new(md_contract::Push::MissionsUpdated, Value::Null),
+                    );
+                    RpcResponse::ok(json!({ "ok": true }))
+                }
+                Err(e) => RpcResponse::ok(json!({ "ok": false, "error": e.to_string() })),
+            }
+        }
+        Op::OrgGetTrigger => RpcResponse::ok(
+            read_config(&ctx)
+                .get("orgTrigger")
+                .cloned()
+                .unwrap_or_else(|| json!({ "enabled": false, "mode": "review" })),
+        ),
+        Op::OrgSetTrigger => {
+            let next: Value = tri!(ctx.arg(0));
+            let mut cfg = read_config(&ctx);
+            cfg["orgTrigger"] = next.clone();
+            match write_config(&ctx, &cfg) {
+                Ok(()) => RpcResponse::ok(next),
+                Err(e) => RpcResponse::err(ErrorCode::Internal, e.to_string()),
+            }
+        }
+
+        // Workers are ephemeral agents: a live pty plus a registry record.
+        // Derived rather than tracked separately, so the list cannot drift from
+        // what is actually running.
+        Op::WorkersList => {
+            let reg = hive::Hive::new(ctx.paths.hive_root()).registry();
+            let live: Vec<Value> = ctx
+                .state
+                .pty
+                .list(&ctx.tenant)
+                .into_iter()
+                .filter(|s| reg["agents"][&s.id]["isGod"].as_bool() != Some(true))
+                .map(|s| {
+                    let a = &reg["agents"][&s.id];
+                    json!({
+                        "workerId": s.id, "name": a["name"].as_str().unwrap_or(&s.id),
+                        "cwd": s.cwd, "pid": s.pid,
+                        "idleMs": ctx.state.pty.idle_for(&s.id),
+                        "onHold": a["onHold"].as_bool().unwrap_or(false),
+                    })
+                })
+                .collect();
+            let cap = read_config(&ctx)["defaultWorkerTokenCap"].as_i64().unwrap_or(0);
+            RpcResponse::ok(json!({ "live": live, "preserved": [], "maxWorkers": cap }))
+        }
+        Op::WorkersStop => {
+            let id: String = tri!(ctx.arg(0));
+            match ctx.state.pty.kill(&id, &ctx.tenant) {
+                Ok(()) => RpcResponse::ok(json!({ "ok": true })),
+                Err(e) => RpcResponse::ok(json!({ "ok": false, "error": e.to_string() })),
+            }
+        }
+
+        Op::SlackSetConfig => slack_set_config(&ctx),
+        Op::SlackStatus => {
+            let base = std::env::var("MD_PUBLIC_ORIGIN").unwrap_or_default();
+            let secrets = crate::secrets::Secrets::new(&ctx.paths.harness_home());
+            RpcResponse::ok(json!({
+                "running": true,
+                "configured": secrets.has("slack:botToken") && secrets.has("slack:signingSecret"),
+                "url": if base.is_empty() { Value::Null }
+                       else { json!(format!("{}/hooks/{}/slack", base.trim_end_matches('/'), ctx.tenant)) },
+            }))
+        }
+        Op::SlackReply => slack_reply(&ctx).await,
+
+        Op::TelemetrySnapshot => RpcResponse::ok(telemetry_snapshot(&ctx)),
+        Op::TelemetrySpans => {
+            let id: String = tri!(ctx.arg(0));
+            RpcResponse::ok(telemetry_snapshot(&ctx)["spans"][&id].clone())
+        }
+        Op::TelemetryUsage => {
+            let id: String = tri!(ctx.arg(0));
+            let snap = telemetry_snapshot(&ctx);
+            let found = snap["usage"]
+                .as_array()
+                .and_then(|a| a.iter().find(|u| u["agentId"] == id.as_str()).cloned());
+            RpcResponse::ok(found.unwrap_or(Value::Null))
+        }
+
+        Op::HiveAgentDirectory => {
+            let reg = hive::Hive::new(ctx.paths.hive_root()).registry();
+            let live: Vec<String> = ctx.state.pty.list(&ctx.tenant).into_iter().map(|s| s.id).collect();
+            let agents: Vec<Value> = reg["agents"]
+                .as_object()
+                .map(|m| {
+                    m.iter()
+                        .map(|(id, a)| {
+                            let mut e = a.clone();
+                            if let Some(o) = e.as_object_mut() {
+                                o.insert("id".into(), json!(id));
+                                // Liveness comes from the pty table, never the
+                                // registry: a crashed agent keeps its record.
+                                o.insert("live".into(), json!(live.contains(id)));
+                            }
+                            e
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            RpcResponse::ok(json!({ "godId": reg["godId"], "agents": agents }))
+        }
+        Op::HiveAgentContext => {
+            let id: String = tri!(ctx.arg(0));
+            let snap = telemetry_snapshot(&ctx);
+            RpcResponse::ok(
+                snap["usage"]
+                    .as_array()
+                    .and_then(|a| a.iter().find(|u| u["agentId"] == id.as_str()))
+                    .map(|u| u["contextTokens"].clone())
+                    .unwrap_or(Value::Null),
+            )
+        }
+
         Op::WebhooksList => RpcResponse::ok(webhooks(&ctx).list()),
         Op::WebhooksSave => {
             let list: Vec<Value> = tri!(ctx.arg(0));
@@ -327,6 +481,148 @@ pub async fn run(op: Op, ctx: Ctx) -> RpcResponse {
 
 fn integrations(ctx: &Ctx) -> crate::integrations::Integrations {
     crate::integrations::Integrations::new(&ctx.paths.harness_home())
+}
+
+/// Slack credentials go to the encrypted store, never to config.json — the
+/// signing secret and bot token are exactly the kind of value the fail-closed
+/// store exists for.
+fn slack_set_config(ctx: &Ctx) -> RpcResponse {
+    let patch: Value = tri!(ctx.arg(0));
+    let secrets = crate::secrets::Secrets::new(&ctx.paths.harness_home());
+    for (field, reference) in [("signingSecret", "slack:signingSecret"), ("botToken", "slack:botToken")] {
+        if let Some(v) = patch.get(field).and_then(|v| v.as_str()) {
+            if v.is_empty() {
+                let _ = secrets.remove(reference);
+            } else if let Err(e) = secrets.set(reference, v) {
+                return RpcResponse::ok(json!({ "ok": false, "error": e.to_string() }));
+            }
+        }
+    }
+    // Non-secret fields stay in config where the UI can read them back.
+    let mut cfg = read_config(ctx);
+    for field in ["defaultChannel", "enabled"] {
+        if let Some(v) = patch.get(field) {
+            cfg["slack"][field] = v.clone();
+        }
+    }
+    match write_config(ctx, &cfg) {
+        Ok(()) => RpcResponse::ok(json!({ "ok": true })),
+        Err(e) => RpcResponse::ok(json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+/// Post a reply into a Slack thread. The bot token is read here and attached
+/// here; it appears in no response and no log.
+async fn slack_reply(ctx: &Ctx) -> RpcResponse {
+    let m: Value = tri!(ctx.arg(0));
+    let (channel, thread_ts, text) = (
+        m["channel"].as_str().unwrap_or(""),
+        m["thread_ts"].as_str().unwrap_or(""),
+        m["text"].as_str().unwrap_or(""),
+    );
+    if channel.is_empty() || text.is_empty() {
+        return RpcResponse::ok(json!({ "ok": false, "error": "channel and text are required" }));
+    }
+    let token = match crate::secrets::Secrets::new(&ctx.paths.harness_home()).get("slack:botToken") {
+        Ok(Some(t)) => t,
+        Ok(None) => return RpcResponse::ok(json!({ "ok": false, "error": "no Slack bot token configured" })),
+        Err(e) => return RpcResponse::ok(json!({ "ok": false, "error": e.to_string() })),
+    };
+
+    let mut body = json!({ "channel": channel, "text": text });
+    if !thread_ts.is_empty() {
+        body["thread_ts"] = json!(thread_ts);
+    }
+    let res = reqwest::Client::new()
+        .post("https://slack.com/api/chat.postMessage")
+        .bearer_auth(token)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await;
+
+    match res {
+        Ok(r) => match r.json::<Value>().await {
+            // Slack answers 200 with {ok:false,error} for application errors, so
+            // the status code alone is not the answer.
+            Ok(v) => RpcResponse::ok(json!({
+                "ok": v["ok"].as_bool().unwrap_or(false),
+                "error": v.get("error").cloned().unwrap_or(Value::Null),
+            })),
+            Err(_) => RpcResponse::ok(json!({ "ok": false, "error": "unreadable Slack response" })),
+        },
+        Err(_) => RpcResponse::ok(json!({ "ok": false, "error": "request failed" })),
+    }
+}
+
+/// Per-agent usage and tool spans, derived from the session transcripts.
+///
+/// Derived on read rather than accumulated in memory: the transcripts are the
+/// record, and a separate counter would drift from them across a restart.
+fn telemetry_snapshot(ctx: &Ctx) -> Value {
+    let reg = hive::Hive::new(ctx.paths.hive_root()).registry();
+    let mut usage = Vec::new();
+    let mut spans = serde_json::Map::new();
+
+    if let Some(agents) = reg["agents"].as_object() {
+        for (id, a) in agents {
+            let (Some(cwd), Some(session)) = (
+                a["cwd"].as_str(),
+                a["sessionId"].as_str().filter(|s| !s.is_empty()),
+            ) else {
+                continue;
+            };
+            let Some(file) = crate::transcript::session_file(&ctx.paths.home(), cwd, session) else {
+                continue;
+            };
+            let Ok(text) = std::fs::read_to_string(&file) else { continue };
+
+            let (mut input, mut output, mut cache_read, mut cache_write) = (0u64, 0u64, 0u64, 0u64);
+            let mut model = Value::Null;
+            let mut context_tokens = 0u64;
+            let mut tool_spans = Vec::new();
+
+            for line in text.lines() {
+                let Ok(rec) = serde_json::from_str::<Value>(line) else { continue };
+                if rec["type"] != "assistant" {
+                    continue;
+                }
+                if let Some(m) = rec["message"]["model"].as_str() {
+                    model = json!(m);
+                }
+                let u = &rec["message"]["usage"];
+                let n = |k: &str| u[k].as_u64().unwrap_or(0);
+                input += n("input_tokens");
+                output += n("output_tokens");
+                cache_write += n("cache_creation_input_tokens");
+                cache_read += n("cache_read_input_tokens");
+                // The LAST assistant record's totals are the live context
+                // occupancy; the running sums above are lifetime spend.
+                let live = n("input_tokens") + n("output_tokens")
+                    + n("cache_creation_input_tokens") + n("cache_read_input_tokens");
+                if live > 0 {
+                    context_tokens = live;
+                }
+                if let Some(blocks) = rec["message"]["content"].as_array() {
+                    for b in blocks.iter().filter(|b| b["type"] == "tool_use") {
+                        tool_spans.push(json!({ "tool": b["name"], "ts": rec["timestamp"] }));
+                    }
+                }
+            }
+
+            // Only the tail is useful to a UI, and an agent can accumulate
+            // thousands.
+            let start = tool_spans.len().saturating_sub(100);
+            spans.insert(id.clone(), json!(tool_spans[start..]));
+            usage.push(json!({
+                "agentId": id, "model": model,
+                "inputTokens": input, "outputTokens": output,
+                "cacheReadTokens": cache_read, "cacheWriteTokens": cache_write,
+                "contextTokens": context_tokens,
+            }));
+        }
+    }
+    json!({ "usage": usage, "spans": spans })
 }
 
 fn webhooks(ctx: &Ctx) -> crate::webhooks::Webhooks {
