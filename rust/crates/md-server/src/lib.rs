@@ -156,6 +156,7 @@ pub async fn build(cfg: &ServerConfig, accounts: Arc<accounts::Accounts>, sandbo
         .route("/api/me", get(me))
         .route("/api/mcp", get(mcp_catalog))
         .route("/api/engines", get(engine_catalog))
+        .route("/api/engines/{id}/install", post(engine_install))
         // Web-native, like /api/transcript: the Electron bridge had no recast
         // channel, and adding one to the generated enum would make the parity
         // numbers describe a contract that never existed.
@@ -476,6 +477,87 @@ async fn engine_catalog(
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_else(|| serde_json::json!({}));
     Json(serde_json::json!({ "engines": engines::view(&cfg) }))
+}
+
+/// How long an install is given before it is abandoned.
+///
+/// Generous, because a cold npm install of a large CLI on a slow link is
+/// genuinely minutes — and a timeout that fires early leaves a half-installed
+/// package with nothing to say about it.
+const INSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Install an engine's command.
+///
+/// **Admin only, and operators only.** This runs a shell command on the server
+/// host, which is a strictly larger privilege than anything else here: an agent
+/// may PROPOSE a tool and never arm it, and it may not reach this at all. The
+/// command run is the one in the catalogue or the one this tenant wrote into its
+/// own config — in both cases something a person put there.
+async fn engine_install(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    auth::Admin(session): auth::Admin,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let cfg = state
+        .paths(&session.tenant)
+        .and_then(|p| std::fs::read_to_string(p.config_file()).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    let Some(engine) = engines::resolve(&cfg, &id) else {
+        return Json(serde_json::json!({ "ok": false, "error": format!("no engine `{id}`") }));
+    };
+    if engine.install.trim().is_empty() {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": format!(
+                "there is no known way to install {}. Set one under \
+                 engines.{id}.install in this floor's config and try again.",
+                engine.label
+            ),
+        }));
+    }
+
+    // The agent PATH, so the install lands where agents will look for it — and
+    // so a command that itself needs node finds the node the agents use.
+    let run = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(&engine.install)
+        .env("PATH", md_pty::env::agent_path())
+        .output();
+
+    let out = match tokio::time::timeout(INSTALL_TIMEOUT, run).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
+            return Json(serde_json::json!({ "ok": false, "error": format!("could not run it: {e}") }))
+        }
+        Err(_) => {
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": "the install ran for ten minutes without finishing and was abandoned",
+            }))
+        }
+    };
+
+    // The tail of both streams: npm's useful part is at the end, and the whole
+    // of it is not something to put through a status line.
+    let tail = |b: &[u8]| {
+        let t = String::from_utf8_lossy(b);
+        t.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev()
+            .collect::<Vec<_>>().join("\n")
+    };
+    let ok = out.status.success();
+    Json(serde_json::json!({
+        "ok": ok,
+        // Re-checked rather than assumed: an installer can exit 0 and still not
+        // put the command anywhere the agents will find it, which is the whole
+        // failure this panel exists to make visible.
+        "available": engines::available(&engine.command),
+        "output": if ok { tail(&out.stdout) } else { tail(&out.stderr) },
+        "error": if ok { serde_json::Value::Null } else {
+            serde_json::json!(format!("install failed: {}", out.status))
+        },
+    }))
 }
 
 /// Rename the floor to a theme's cast, rebuilding each agent's identity.

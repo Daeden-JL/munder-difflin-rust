@@ -834,6 +834,8 @@ fn Engines(status: RwSignal<String>) -> impl IntoView {
                         let builtin = e["builtin"].as_bool().unwrap_or(false);
                         let hooks = e["hooks"].as_bool().unwrap_or(false);
                         let ok = e["available"].as_bool().unwrap_or(false);
+                        let installable = !e["install"].as_str().unwrap_or("").trim().is_empty();
+                        let recipe = e["install"].as_str().unwrap_or("").to_string();
                         let cmd = RwSignal::new(e["command"].as_str().unwrap_or("").to_string());
                         let argv = RwSignal::new(
                             e["args"].as_array().map(|a| a.iter()
@@ -853,6 +855,43 @@ fn Engines(status: RwSignal<String>) -> impl IntoView {
                                        on:input=move |ev| cmd.set(event_target_value(&ev))/>
                                 <input prop:value=move || argv.get() placeholder="arguments"
                                        on:input=move |ev| argv.set(event_target_value(&ev))/>
+                                // Only where it is missing AND there is a
+                                // known way to get it: an install button beside
+                                // something already installed is a button whose
+                                // only outcome is a surprise.
+                                <Show when=move || !ok && installable>
+                                    {
+                                        let id = id.clone();
+                                        let recipe = recipe.clone();
+                                        view! {
+                                            <button class="ghost" title=recipe on:click=move |_| {
+                                                let id = id.clone();
+                                                status.set(format!("installing {id} — this takes a few minutes…"));
+                                                leptos::task::spawn_local(async move {
+                                                    let path = format!("/api/engines/{id}/install");
+                                                    match api::post_json(&path, &json!({})).await {
+                                                        Ok(v) if v["ok"] == true => status.set(
+                                                            if v["available"] == true {
+                                                                format!("{id} installed")
+                                                            } else {
+                                                                // Exited 0 and still not on the
+                                                                // path: worth saying, because the
+                                                                // row will still read "missing".
+                                                                format!(
+                                                                    "{id} installed, but its command is still not \
+                                                                     on the agents\u{2019} path"
+                                                                )
+                                                            }),
+                                                        Ok(v) => status.set(
+                                                            v["error"].as_str().unwrap_or("install failed").to_string()),
+                                                        Err(e) => status.set(e),
+                                                    }
+                                                    load();
+                                                });
+                                            }>"install"</button>
+                                        }
+                                    }
+                                </Show>
                                 <button class="ghost" on:click=move |_| {
                                     patch(i1.clone(), vec![
                                         ("command", json!(cmd.get_untracked())),
@@ -873,6 +912,14 @@ fn Engines(status: RwSignal<String>) -> impl IntoView {
                         }
                     }
                 </For>
+                <p class="hint">
+                    "Installing puts the command where your agents look for it, and it stays
+                     there across rebuilds \u{2014} it lands in this floor\u{2019}s data, not in the
+                     server image. An engine with no install button has no recipe the
+                     catalogue knows; give it one under "
+                    <code>"engines.<id>.install"</code>
+                    " and the button appears."
+                </p>
                 <p class="hint">
                     "\u{201C}Reports\u{201D} means the CLI tells the floor what it is doing, so its
                      agent walks to the shelves when it reads and to the terminal when it

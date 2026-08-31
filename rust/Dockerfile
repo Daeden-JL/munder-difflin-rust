@@ -35,8 +35,13 @@ FROM debian:bookworm-slim AS runtime
 # ca-certificates for outbound HTTPS; procps so process inspection works when
 # debugging a wedged agent inside the container; git because the whole git plane
 # shells out to it — without it those channels fail at runtime, not at build.
+#
+# nodejs and npm because with MD_SANDBOX=passthrough this container IS the agent
+# environment: every agent CLI worth running is an npm package, and so is every
+# server in the MCP bundle (all seven launch through `npx`). Without a runtime
+# here the floor starts, shows a roster, and can spawn precisely nothing.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates procps git \
+ && apt-get install -y --no-install-recommends ca-certificates procps git nodejs npm \
  && rm -rf /var/lib/apt/lists/*
 
 # The server spawns agent processes, so it does not run as root.
@@ -54,9 +59,22 @@ RUN mkdir -p /home/md/data
 # Inside a container 127.0.0.1 is unreachable from the host, so bind all
 # interfaces. The container boundary is what limits exposure; the published
 # port decides who can reach it.
+# Engines and tools install into the DATA VOLUME, not into an image layer.
+#
+# The layer is the obvious place and the wrong one: `up --build` recreates the
+# container, and everything anyone had installed would go with it. Putting the
+# prefix under the volume means an engine installed once stays installed across
+# rebuilds — which is what makes "install" a button worth pressing rather than a
+# thing you do again every deploy.
+#
+# `MD_AGENT_PATH` is what agents actually inherit, and what the engines panel
+# checks when it says whether a command is installed. Both have to name this
+# directory or the two answers disagree.
 ENV MD_BIND=0.0.0.0:7777 \
     MD_DATA_ROOT=/home/md/data \
     MD_SANDBOX=passthrough \
+    NPM_CONFIG_PREFIX=/home/md/data/.tools \
+    MD_AGENT_PATH=/home/md/data/.tools/bin:/usr/local/bin:/usr/bin:/bin \
     RUST_LOG=md_server=info
 
 EXPOSE 7777

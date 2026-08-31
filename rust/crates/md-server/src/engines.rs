@@ -32,6 +32,14 @@ pub struct Builtin {
     pub args: &'static [&'static str],
     /// Speaks Claude Code's hook and settings protocol.
     pub hooks: bool,
+    /// How to install it, if the catalogue knows. Run by an operator from the
+    /// engines panel, never by an agent.
+    ///
+    /// Empty where the answer is not a one-liner or where guessing it would be
+    /// worse than admitting ignorance — a package name invented here installs
+    /// something, and what it installs is not necessarily this. Set your own
+    /// under `engines.<id>.install`.
+    pub install: &'static str,
 }
 
 /// The presets the Electron original shipped, plus a local-model runner and a
@@ -49,75 +57,75 @@ pub const CATALOG: &[Builtin] = &[
         id: "claude", label: "Claude Code",
         description: "Anthropic's CLI. Reports every tool call, so the floor \
                       shows what it is doing.",
-        command: "claude", args: &[], hooks: true,
+        command: "claude", args: &[], hooks: true, install: "npm install -g @anthropic-ai/claude-code",
     },
     Builtin {
         id: "codex", label: "Codex · GPT",
         description: "OpenAI's coding CLI. Runs, but is quiet on the floor.",
-        command: "codex", args: &[], hooks: false,
+        command: "codex", args: &[], hooks: false, install: "npm install -g @openai/codex",
     },
     Builtin {
         id: "gemini", label: "Gemini CLI",
         description: "Google's coding CLI. Runs, but is quiet on the floor.",
-        command: "gemini", args: &[], hooks: false,
+        command: "gemini", args: &[], hooks: false, install: "npm install -g @google/gemini-cli",
     },
     Builtin {
         id: "antigravity", label: "Antigravity · Gemini",
         description: "Antigravity's agent CLI, on Gemini models. Quiet on the floor.",
-        command: "agy", args: &[], hooks: false,
+        command: "agy", args: &[], hooks: false, install: "",
     },
     Builtin {
         id: "grok", label: "Grok · xAI",
         description: "xAI's coding CLI. Quiet on the floor.",
-        command: "grok", args: &[], hooks: false,
+        command: "grok", args: &[], hooks: false, install: "",
     },
     Builtin {
         id: "kimi", label: "Kimi Code",
         description: "Moonshot's coding CLI. Quiet on the floor, and takes no \
                       inbox mail — work reaches it typed into its prompt.",
-        command: "kimi", args: &[], hooks: false,
+        command: "kimi", args: &[], hooks: false, install: "",
     },
     Builtin {
         id: "qwen", label: "Qwen Code",
         description: "Alibaba's coding CLI. Quiet on the floor.",
-        command: "qwen", args: &[], hooks: false,
+        command: "qwen", args: &[], hooks: false, install: "npm install -g @qwen-code/qwen-code",
     },
     Builtin {
         id: "opencode", label: "OpenCode",
         description: "The open-source terminal agent. Quiet on the floor.",
-        command: "opencode", args: &[], hooks: false,
+        command: "opencode", args: &[], hooks: false, install: "npm install -g opencode-ai",
     },
     Builtin {
         id: "crush", label: "Crush · Charm",
         description: "Charm's terminal agent. Quiet on the floor.",
-        command: "crush", args: &[], hooks: false,
+        command: "crush", args: &[], hooks: false, install: "",
     },
     Builtin {
         id: "pi", label: "Pi",
         description: "The Pi coding CLI. Quiet on the floor.",
-        command: "pi", args: &[], hooks: false,
+        command: "pi", args: &[], hooks: false, install: "",
     },
     Builtin {
         id: "copilot", label: "Copilot",
         description: "GitHub Copilot's CLI. Quiet on the floor, and takes no \
                       inbox mail — work reaches it typed into its prompt.",
-        command: "copilot", args: &[], hooks: false,
+        command: "copilot", args: &[], hooks: false, install: "npm install -g @github/copilot",
     },
     Builtin {
         id: "cursor", label: "Cursor",
         description: "Cursor's headless agent. Quiet on the floor.",
-        command: "cursor-agent", args: &[], hooks: false,
+        command: "cursor-agent", args: &[], hooks: false, install: "",
     },
     Builtin {
         id: "ollama", label: "Ollama",
         description: "A model running on this machine. Set which one in the \
                       arguments.",
-        command: "ollama", args: &["run", "llama3.2"], hooks: false,
+        command: "ollama", args: &["run", "llama3.2"], hooks: false, install: "",
     },
     Builtin {
         id: "shell", label: "Plain shell",
         description: "A bare shell, for looking around a workspace. Not an agent.",
-        command: "bash", args: &[], hooks: false,
+        command: "bash", args: &[], hooks: false, install: "",
     },
 ];
 
@@ -131,6 +139,7 @@ pub struct Engine {
     pub command: String,
     pub args: Vec<String>,
     pub hooks: bool,
+    pub install: String,
     /// Whether the catalogue ships it. A built-in can be edited and hidden but
     /// never deleted — the definition would come back on the next release and
     /// the "deletion" would look like a bug.
@@ -155,6 +164,7 @@ impl Engine {
             command: b.command.into(),
             args: b.args.iter().map(|a| (*a).to_string()).collect(),
             hooks: b.hooks,
+            install: b.install.into(),
             builtin: true,
         }
     }
@@ -176,6 +186,9 @@ impl Engine {
         }
         if let Some(v) = over.get("hooks").and_then(|v| v.as_bool()) {
             self.hooks = v;
+        }
+        if let Some(v) = over.get("install").and_then(|v| v.as_str()) {
+            self.install = v.into();
         }
     }
 }
@@ -226,6 +239,7 @@ pub fn all(config: &Value) -> Vec<Engine> {
                 command: command.to_string(),
                 args: strings(v.get("args")).unwrap_or_default(),
                 hooks: v.get("hooks").and_then(|h| h.as_bool()).unwrap_or(false),
+                install: v.get("install").and_then(|i| i.as_str()).unwrap_or("").to_string(),
                 builtin: false,
             });
         }
@@ -255,10 +269,11 @@ pub fn available(command: &str) -> bool {
     if cmd.contains(std::path::MAIN_SEPARATOR) || cmd.contains('/') {
         return Path::new(cmd).is_file();
     }
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| dir.join(cmd).is_file())
+    // The AGENT's path, not the server's. They differ exactly where it matters:
+    // a server started as a daemon has a stub PATH, and in a container the
+    // engines are installed to a directory only `MD_AGENT_PATH` names. Asking
+    // the server's own environment answers a question nobody asked.
+    std::env::split_paths(md_pty::env::agent_path()).any(|dir| dir.join(cmd).is_file())
 }
 
 /// The catalogue as the setup panel shows it.
@@ -272,6 +287,7 @@ pub fn view(config: &Value) -> Value {
             "command": e.command,
             "args": e.args,
             "hooks": e.hooks,
+            "install": e.install,
             "builtin": e.builtin,
             "available": available(&e.command),
         }))
@@ -345,6 +361,36 @@ mod tests {
         let list = all(&cfg);
         assert!(!list.iter().any(|e| e.id == "shell"));
         assert!(list.iter().any(|e| e.id == "claude"));
+    }
+
+    /// The catalogue only claims an installer where it knows the package. A
+    /// guessed npm name installs SOMETHING, and what it installs is not
+    /// necessarily the CLI you asked for.
+    #[test]
+    fn an_engine_offers_an_installer_only_where_one_is_known() {
+        let list = all(&json!({}));
+        let claude = list.iter().find(|e| e.id == "claude").unwrap();
+        assert_eq!(claude.install, "npm install -g @anthropic-ai/claude-code");
+        // A local model runner is not an npm package, and saying so is better
+        // than shipping a command that fails in an unhelpful way.
+        assert!(list.iter().find(|e| e.id == "ollama").unwrap().install.is_empty());
+        assert!(list.iter().find(|e| e.id == "shell").unwrap().install.is_empty());
+    }
+
+    /// ...and a tenant can supply the recipe the catalogue lacks, for a built-in
+    /// or for its own engine.
+    #[test]
+    fn a_tenant_can_teach_the_panel_how_to_install_something() {
+        let cfg = json!({ "engines": {
+            "ollama": { "install": "curl -fsSL https://ollama.com/install.sh | sh" },
+            "mine": { "command": "my-agent", "install": "cargo install my-agent" },
+        }});
+        assert!(resolve(&cfg, "ollama").unwrap().install.starts_with("curl"));
+        assert_eq!(resolve(&cfg, "mine").unwrap().install, "cargo install my-agent");
+        // And the panel can see it, which is what decides whether a button shows.
+        let v = view(&cfg);
+        let row = v.as_array().unwrap().iter().find(|r| r["id"] == "mine").unwrap();
+        assert_eq!(row["install"], "cargo install my-agent");
     }
 
     #[test]
