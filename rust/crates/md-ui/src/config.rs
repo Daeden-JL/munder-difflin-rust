@@ -124,8 +124,12 @@ fn Agents(
     Effect::new(move |_| {
         let _ = changed.get();
         leptos::task::spawn_local(async move {
-            if let Ok(v) = api::get_json("/api/engines").await {
-                engines.set(v["engines"].as_array().cloned().unwrap_or_default());
+            match api::get_json("/api/engines").await {
+                Ok(v) => engines.set(v["engines"].as_array().cloned().unwrap_or_default()),
+                // Swallowing this left an empty picker and no reason for it.
+                // The usual cause is a server older than the client, which is
+                // worth saying rather than leaving someone to guess.
+                Err(e) => status.set(format!("could not load engines: {e}")),
             }
         });
     });
@@ -499,7 +503,17 @@ fn Agents(
                 <select on:change=move |e| engine.set(event_target_value(&e))>
                     {move || {
                         let picked = engine.get();
-                        engines.get().into_iter().map(|x| {
+                        let list = engines.get();
+                        // An empty picker is indistinguishable from a broken
+                        // one, and this is the state a stale server produces.
+                        if list.is_empty() {
+                            return vec![view! {
+                                <option value=String::new() selected=true>
+                                    {"no engines — the server may need rebuilding".to_string()}
+                                </option>
+                            }];
+                        }
+                        list.into_iter().map(|x| {
                             let id = x["id"].as_str().unwrap_or("").to_string();
                             let mut label = x["label"].as_str().unwrap_or(&id).to_string();
                             // An engine whose binary is missing is still
@@ -651,8 +665,9 @@ fn Engines(status: RwSignal<String>) -> impl IntoView {
 
     let load = move || {
         leptos::task::spawn_local(async move {
-            if let Ok(v) = api::get_json("/api/engines").await {
-                list.set(v["engines"].as_array().cloned().unwrap_or_default());
+            match api::get_json("/api/engines").await {
+                Ok(v) => list.set(v["engines"].as_array().cloned().unwrap_or_default()),
+                Err(e) => status.set(format!("could not load engines: {e}")),
             }
             if let Ok(cfg) = api::rpc("config:get", json!([])).await {
                 raw.set(cfg["engines"].as_object().cloned().unwrap_or_default());
@@ -910,8 +925,9 @@ fn Tools(status: RwSignal<String>) -> impl IntoView {
     let raw = RwSignal::new(serde_json::Map::new());
     let load = move || {
         leptos::task::spawn_local(async move {
-            if let Ok(v) = api::get_json("/api/mcp").await {
-                list.set(v["catalog"].as_array().cloned().unwrap_or_default());
+            match api::get_json("/api/mcp").await {
+                Ok(v) => list.set(v["catalog"].as_array().cloned().unwrap_or_default()),
+                Err(e) => status.set(format!("could not load tools: {e}")),
             }
             if let Ok(cfg) = api::rpc("config:get", json!([])).await {
                 raw.set(cfg["mcpDefaults"].as_object().cloned().unwrap_or_default());

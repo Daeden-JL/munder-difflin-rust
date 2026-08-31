@@ -39,14 +39,19 @@ pub async fn rpc(channel: &str, args: Value) -> Result<Value, String> {
 
 /// A web-native endpoint, not part of the Electron contract.
 pub async fn get_json(path: &str) -> Result<Value, String> {
-    Request::get(path)
+    let res = Request::get(path)
         .credentials(web_sys::RequestCredentials::SameOrigin)
         .send()
         .await
-        .map_err(|e| e.to_string())?
-        .json()
-        .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // Said plainly, because the alternative is a JSON parse error against an
+    // error page. A 404 here almost always means the server is older than the
+    // client — the two are built separately — and "expected value at line 1"
+    // sends you looking in entirely the wrong place.
+    if !(200..300).contains(&res.status()) {
+        return Err(format!("{} {} — {path}", res.status(), res.status_text()));
+    }
+    res.json().await.map_err(|e| e.to_string())
 }
 
 /// POST JSON to a web-native endpoint and read the JSON back.

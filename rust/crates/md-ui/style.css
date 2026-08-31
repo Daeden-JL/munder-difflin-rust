@@ -233,7 +233,13 @@ header {
 .cfg-tabs { flex:0 0 auto; display:flex; align-items:center; gap:.4rem;
             padding:.4rem .7rem; border-bottom:1px solid var(--line); background:var(--panel) }
 .cfg-body { flex:1; min-height:0; overflow-y:auto; padding:.8rem }
-.cfg-cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:1rem }
+/* Two panels, explicitly — never "as many as fit". `auto-fit` computed three
+   tracks at this dialog's width and only collapsed the empty one when nothing
+   at all landed in it, so a single stray node turned a pair of full-width
+   panels into two squeezed ones beside an empty column. Every tab here renders
+   exactly two sections, so say that. */
+.cfg-cols { display:grid; grid-template-columns:1fr; gap:1rem; align-items:start }
+@media (min-width:820px) { .cfg-cols { grid-template-columns:1fr 1fr } }
 .config section { background:var(--panel); border:1px solid var(--line);
                   border-radius:6px; padding:.8rem }
 .config section.wide { grid-column:1/-1 }
