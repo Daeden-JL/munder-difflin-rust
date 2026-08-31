@@ -249,7 +249,7 @@ fn App() -> impl IntoView {
                     <div class="main">
                         <div class="floor-wrap" style=move || format!("height:{}%", floor_pct.get())>
                             <Floor occupants=Signal::derive(move || occupants(agents.get(), &archetypes.get()))
-                                   theme selected activity=tool_activity archetypes/>
+                                   theme selected activity=tool_activity/>
                         </div>
                         <Splitter axis="y" on_drag=move |dy| {
                             // Percentage rather than pixels, so the split holds

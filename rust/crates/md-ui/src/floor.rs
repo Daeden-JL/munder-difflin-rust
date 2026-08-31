@@ -61,6 +61,20 @@ pub fn station_for(tool: &str) -> &'static str {
 /// floor does not turn into a wall of text.
 const SAY_SECS: f64 = 4.0;
 
+/// How long work has to stay at one station before its agent walks over.
+///
+/// A tool call used to move somebody instantly, which on a busy agent is a
+/// figure twitching between the shelves and the terminal several times a second
+/// and never arriving anywhere. Walking is only worth watching if it means the
+/// agent is actually settling in to do that kind of work.
+const WORK_DWELL: f64 = 3.0;
+/// How long after the last tool call an agent stays at its station.
+///
+/// Without it, whoever ran the last command in a session stands at the terminal
+/// until the next one — for hours, if the fleet goes quiet — and the floor stops
+/// being a picture of what is happening now.
+const WORK_RELEASE: f64 = 25.0;
+
 /// One agent's motion state. Kept OUTSIDE the reactive graph: it changes every
 /// frame, and routing sixty updates a second through signals would re-render
 /// the surrounding view for something only the canvas cares about.
@@ -105,6 +119,15 @@ struct Walker {
     /// Empty is the normal state: most walks are within one room, and a
     /// straight line is the whole route.
     path: Vec<[f64; 2]>,
+    /// The kind of station this agent's recent work belongs to, how long its
+    /// work has been that kind, and how long since any tool call at all.
+    ///
+    /// Kept as a dwell rather than acted on immediately: a tool name arrives on
+    /// every call, and following each one moves a busy agent across the room
+    /// faster than it can walk.
+    want: Option<String>,
+    want_for: f64,
+    since_tool: f64,
 }
 
 impl Walker {
@@ -117,6 +140,7 @@ impl Walker {
             x, y, tx: x, ty: y, at: None, facing_back: false, step: 0, step_t: 0.0,
             linger: 0.0, roam, seed, saying: None, say_t: 0.0, restless,
             home: None, haunt: None, entering: false, path: Vec::new(),
+            want: None, want_for: 0.0, since_tool: f64::MAX / 2.0,
         }
     }
 
@@ -168,7 +192,51 @@ impl Walker {
         self.say_t = SAY_SECS;
     }
 
-    fn advance(&mut self, dt: f64, p: &theme::Personality, nav: &Nav) {
+    /// Note that this agent just used a tool of some kind.
+    ///
+    /// Recorded, not obeyed. Whether it is worth walking anywhere is decided in
+    /// `advance`, once it is clear the work is staying put.
+    fn note_tool(&mut self, kind: &str) {
+        if self.want.as_deref() != Some(kind) {
+            self.want = Some(kind.to_string());
+            self.want_for = 0.0;
+        }
+        self.since_tool = 0.0;
+    }
+
+    /// Advance one frame, and say whether the agent now wants to be at a
+    /// station.
+    ///
+    /// Returned rather than acted on, because the station belongs to the theme
+    /// and the walker deliberately knows nothing about it — it knows how long
+    /// the work has been one kind, which is the whole of the decision.
+    fn advance(&mut self, dt: f64, p: &theme::Personality, nav: &Nav) -> Option<String> {
+        self.since_tool += dt;
+        let mut wants = None;
+        if let Some(kind) = self.want.clone() {
+            self.want_for += dt;
+            // Settled into this kind of work, and still doing it. Both halves
+            // matter: the first stops a passing call moving anyone, the second
+            // stops a burst that has already finished dragging them across the
+            // room after the fact.
+            if self.want_for >= WORK_DWELL
+                && self.since_tool <= WORK_DWELL
+                && self.at.as_deref() != Some(kind.as_str())
+            {
+                wants = Some(kind);
+            }
+        }
+        // Work that stopped releases the station, so they drift back to their
+        // own post instead of standing at a console indefinitely.
+        if self.since_tool > WORK_RELEASE {
+            self.at = None;
+            self.want = None;
+        }
+        self.advance_motion(dt, p, nav);
+        wants
+    }
+
+    fn advance_motion(&mut self, dt: f64, p: &theme::Personality, nav: &Nav) {
         if self.saying.is_some() {
             self.say_t -= dt;
             if self.say_t <= 0.0 {
@@ -253,14 +321,13 @@ impl Walker {
 
     fn send_to(&mut self, s: &theme::Station, nav: &Nav) {
         self.at = Some(s.kind.clone());
-        // Stand just clear of the station's bottom edge, so the figure does not
-        // cover the label. Off the station's own height rather than a constant:
-        // a console drawn flat on a deck plan is a tenth the depth of one drawn
-        // side-on, and a fixed offset put the figure in the next room along.
-        self.go(nav, [
-            s.x + s.w / 2.0 - pixel::SCENE_W as f64 / 2.0,
-            s.y + s.h - 2.0,
-        ]);
+        // The dwell has been spent; a second walk to the same console would
+        // otherwise be requested on the very next frame.
+        self.want_for = 0.0;
+        // The map says where to stand. It used to be derived from the console's
+        // own box, which suits a slab on a wall and puts somebody through a
+        // bulkhead on a deck plan.
+        self.go(nav, s.spot());
     }
 }
 
@@ -421,9 +488,6 @@ pub fn Floor(
     /// The most recent `(agentId, tool)` from the hook stream. Changing it is
     /// what sends an agent to a station.
     activity: RwSignal<Option<(String, String)>>,
-    /// agent id → archetype. Passed in rather than recomputed so the floor and
-    /// the roster cannot disagree about who is dressed as whom.
-    archetypes: Signal<HashMap<String, String>>,
 ) -> impl IntoView {
     let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
     let sprites = Rc::new(RefCell::new(Sprites::default()));
@@ -436,23 +500,14 @@ pub fn Floor(
     // directly rather than through a signal, because the animation loop owns
     // position and two writers would fight.
     {
-        let (walkers, navs) = (walkers.clone(), navs.clone());
+        let walkers = walkers.clone();
         Effect::new(move |_| {
             let Some((id, tool)) = activity.get() else { return };
-            let kind = station_for(&tool);
-            let themes = theme::builtin();
-            let Some(t) = themes.get(theme.get_untracked() % themes.len().max(1)) else { return };
-            let Some(station) = t.layout.stations.iter().find(|s| s.kind == kind) else { return };
-
-            let nav = navs.borrow_mut().get(t);
-            let mut ws = walkers.borrow_mut();
-            let Some(w) = ws.get_mut(&id) else { return };
-            w.send_to(station, &nav);
-            // Say something on being given work, so the floor narrates itself.
-            if let Some(arch) = archetypes.get_untracked().get(&id) {
-                if let Some(c) = t.character(arch) {
-                    w.say(&c.personality.working);
-                }
+            // Noted, not obeyed: a busy agent emits tool calls faster than it
+            // can cross the room, and following each one is a figure that
+            // twitches between stations and never arrives at any of them.
+            if let Some(w) = walkers.borrow_mut().get_mut(&id) {
+                w.note_tool(station_for(&tool));
             }
         });
     }
@@ -538,7 +593,15 @@ pub fn Floor(
                             let (home, haunt) = posts(t, o);
                             walker.home = home;
                             walker.haunt = haunt;
-                            walker.advance(dt, &p, &nav);
+                            // Settling in to a kind of work is what sends an
+                            // agent to a station, and arriving is when it has
+                            // something to say about it.
+                            if let Some(kind) = walker.advance(dt, &p, &nav) {
+                                if let Some(st) = t.layout.stations.iter().find(|s| s.kind == kind) {
+                                    walker.send_to(st, &nav);
+                                    walker.say(&p.working);
+                                }
+                            }
                         }
                     }
 
@@ -875,6 +938,84 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Nobody crosses the room for a tool call that was over before they got
+    /// there — and settling in to one kind of work does send them.
+    ///
+    /// The old behaviour was to walk on every call, which on a busy agent is a
+    /// figure twitching between the shelves and the terminal several times a
+    /// second and arriving at neither.
+    #[test]
+    fn a_passing_tool_call_moves_nobody_but_sustained_work_does() {
+        let nav = Nav::new(&[]);
+        let p = theme::Personality::default();
+        let mut w = Walker::new(0, 5, [0.0, 60.0, 300.0, 140.0], 0.5);
+
+        // One call, then quiet. Nothing for the first couple of seconds.
+        w.note_tool("shelf");
+        let mut asked = None;
+        for _ in 0..120 {
+            asked = asked.or(w.advance(1.0 / 60.0, &p, &nav));
+        }
+        assert!(asked.is_none(), "two seconds of one call is not settling in");
+
+        // Still at it a few seconds later.
+        let mut asked = None;
+        for i in 0..240 {
+            if i % 30 == 0 {
+                w.note_tool("shelf");
+            }
+            asked = asked.or(w.advance(1.0 / 60.0, &p, &nav));
+        }
+        assert_eq!(asked.as_deref(), Some("shelf"), "sustained work should send them");
+    }
+
+    /// Work that keeps changing kind never settles, so nobody is dragged back
+    /// and forth across the floor by an agent switching tools.
+    #[test]
+    fn work_that_keeps_changing_kind_sends_nobody_anywhere() {
+        let nav = Nav::new(&[]);
+        let p = theme::Personality::default();
+        let mut w = Walker::new(0, 5, [0.0, 60.0, 300.0, 140.0], 0.5);
+
+        let kinds = ["shelf", "terminal", "web", "board"];
+        let mut asked = None;
+        for i in 0..1_200 {
+            if i % 60 == 0 {
+                w.note_tool(kinds[(i / 60) as usize % kinds.len()]);
+            }
+            asked = asked.or(w.advance(1.0 / 60.0, &p, &nav));
+        }
+        assert!(asked.is_none(), "changing tools every second is not settling in");
+    }
+
+    /// A station is held while the work lasts and let go afterwards, or whoever
+    /// ran the last command stands at the terminal until the next one — for
+    /// hours, if the fleet goes quiet.
+    #[test]
+    fn an_agent_lets_go_of_its_station_once_the_work_stops() {
+        let nav = Nav::new(&[]);
+        let p = theme::Personality::default();
+        let themes = theme::builtin();
+        let t = themes.iter().find(|t| t.id == "office").unwrap();
+        let st = t.layout.stations.iter().find(|s| s.kind == "terminal").unwrap();
+
+        let mut w = Walker::new(0, 5, t.layout.roam, 0.5);
+        w.note_tool("terminal");
+        w.send_to(st, &nav);
+        assert_eq!(w.at.as_deref(), Some("terminal"));
+        assert_eq!((w.tx, w.ty), (st.spot()[0], st.spot()[1]), "the map says where to stand");
+
+        // Quiet for well under the release, then well over it.
+        for _ in 0..(60 * 10) {
+            w.advance(1.0 / 60.0, &p, &nav);
+        }
+        assert_eq!(w.at.as_deref(), Some("terminal"), "still working, still there");
+        for _ in 0..(60 * 20) {
+            w.advance(1.0 / 60.0, &p, &nav);
+        }
+        assert!(w.at.is_none(), "the work stopped, so the console is free");
     }
 
     /// A theme that declares no walkable space keeps the old behaviour exactly:

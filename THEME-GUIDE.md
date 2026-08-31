@@ -179,7 +179,8 @@ editor is a room people will actually write.
 ### Stations: where work happens
 
 ```jsonc
-{ "kind": "terminal", "label": "ENGINE", "x": 276, "y": 92, "w": 36, "h": 22, "color": "#6a4a3a" }
+{ "kind": "terminal", "label": "ENGINE", "x": 276, "y": 92, "w": 36, "h": 22,
+  "color": "#6a4a3a", "spot": [282, 112] }
 ```
 
 A station is a **destination**, and this is what makes the floor mean something.
@@ -199,11 +200,25 @@ walks to the matching station:
 ENGINE on a ship, ENGINEERING on a bridge, or HANGAR in a docking bay. That is
 where most of a theme's character comes from.
 
-`h` (default 22) is how deep the console is drawn, and the figure stands just
-clear of its bottom edge. A room seen side-on can afford a chunky slab; a room
-seen from above cannot, because the slab would be most of the room — so Serenity
-uses `"h": 10` and puts each console at the top of the room it belongs to, which
-lands the person who works there in the middle of it.
+`h` (default 22) is how deep the console is drawn. A room seen side-on can
+afford a chunky slab; a room seen from above cannot, because the slab would be
+most of the room — so Serenity uses `"h": 10` and puts each console at the top of
+the room it belongs to.
+
+`spot` is where the person working there **stands**, in the same coordinates a
+post is authored in. Author it. The fallback — just under the console's own box
+— suits a slab mounted on a wall and lands somebody in the next room along on a
+deck plan, and on a map with `walk` it has to be walkable deck or they will
+never reach it. A test fails on a station with no spot, and the walkability test
+checks each one.
+
+**An agent walks to a station only once it has been doing that kind of work for
+about three seconds**, and lets the station go about twenty-five seconds after
+the work stops. Following every tool call was a figure twitching between the
+shelves and the terminal several times a second and arriving at neither; holding
+the station forever left whoever ran the last command standing at the terminal
+for hours. Neither number is themeable — they are about how a walk reads, not
+about the room.
 
 ### POIs: the places on the map
 

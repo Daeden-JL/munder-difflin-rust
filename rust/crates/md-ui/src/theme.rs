@@ -132,6 +132,24 @@ pub struct Station {
     /// Fill colour. Themes differ more in their furniture than their cast.
     #[serde(default)]
     pub color: Option<String>,
+    /// Where the person working at this console stands, as the top-left of the
+    /// figure — the same coordinates a post is authored in.
+    ///
+    /// Authored, because the fallback below is a guess: "just under the slab"
+    /// is right for a console on a wall and lands in the next room along on a
+    /// deck plan. A theme that has not named its spots still works.
+    #[serde(default)]
+    pub spot: Option<[f64; 2]>,
+}
+
+impl Station {
+    /// Where to stand to work here.
+    pub fn spot(&self) -> [f64; 2] {
+        self.spot.unwrap_or([
+            self.x + self.w / 2.0 - crate::pixel::SCENE_W as f64 / 2.0,
+            self.y + self.h - 2.0,
+        ])
+    }
 }
 
 fn default_w() -> f64 {
@@ -706,10 +724,7 @@ mod tests {
                 spots.push((format!("post {}", p.id), [p.x, p.y]));
             }
             for st in &t.layout.stations {
-                spots.push((
-                    format!("station {}", st.label),
-                    [st.x + st.w / 2.0 - crate::pixel::SCENE_W as f64 / 2.0, st.y + st.h - 2.0],
-                ));
+                spots.push((format!("station {}", st.label), st.spot()));
             }
             for d in &t.layout.doors {
                 spots.push((format!("doorway {}", d.label), d.threshold));
@@ -734,6 +749,26 @@ mod tests {
                 assert!(
                     nav.connected(to_feet(*hub), to_feet(*at)),
                     "{}: {what} is cut off from {hub_name}", t.id,
+                );
+            }
+        }
+    }
+
+    /// Every map says where its tools are worked at.
+    ///
+    /// The fallback is a guess that happens to suit a console on a wall; a map
+    /// that leans on it has not decided anything, and on a deck plan the guess
+    /// puts somebody in the next room.
+    #[test]
+    fn every_map_names_the_spot_for_each_of_its_tools() {
+        for t in builtin() {
+            for st in &t.layout.stations {
+                assert!(st.spot.is_some(), "{}: {} has no spot to work at", t.id, st.label);
+                let [x, y] = st.spot();
+                assert!(
+                    x >= 0.0 && x <= 320.0 - crate::pixel::SCENE_W as f64
+                        && y >= 0.0 && y <= 176.0 - crate::pixel::SCENE_H as f64,
+                    "{}: {} is worked at ({x}, {y}), off the map", t.id, st.label
                 );
             }
         }
