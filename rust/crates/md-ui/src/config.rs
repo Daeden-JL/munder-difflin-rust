@@ -41,7 +41,7 @@ pub fn Config(
     view! {
         <div class="config">
             <div class="cfg-tabs">
-                {["agents", "preferences", "tools", "accounts"].into_iter().map(|t| {
+                {["agents", "engines", "preferences", "tools", "accounts"].into_iter().map(|t| {
                     let is = move || tab.get() == t;
                     view! {
                         <button class="ghost" class:on=is on:click=move |_| tab.set(t.into())>
@@ -57,6 +57,9 @@ pub fn Config(
                 <Show when=move || tab.get() == "agents">
                     <Agents changed status archetypes theme_idx/>
                 </Show>
+                <Show when=move || tab.get() == "engines">
+                    <Engines status/>
+                </Show>
                 <Show when=move || tab.get() == "preferences">
                     <Preferences status theme_idx/>
                 </Show>
@@ -71,6 +74,31 @@ pub fn Config(
     }
 }
 
+/// Stop an agent and start it again.
+///
+/// Two calls with a wait between them, because the pty manager refuses a
+/// duplicate id and a killed session is only removed once its reader thread
+/// notices the child is gone. Respawning immediately after the kill races that
+/// and fails with "duplicate id" perhaps half the time — which reads to the
+/// user as the button not working.
+async fn restart(id: &str, opts: Value) -> Result<Value, String> {
+    let live = |list: &Value| {
+        list.as_array()
+            .map(|a| a.iter().any(|s| s["id"].as_str() == Some(id)))
+            .unwrap_or(false)
+    };
+    if live(&api::rpc("pty:list", json!([])).await.unwrap_or(Value::Null)) {
+        let _ = api::rpc("pty:kill", json!([id])).await;
+        for _ in 0..60 {
+            gloo_timers::future::TimeoutFuture::new(100).await;
+            if !live(&api::rpc("pty:list", json!([])).await.unwrap_or(Value::Null)) {
+                break;
+            }
+        }
+    }
+    api::rpc("pty:spawn", opts).await
+}
+
 /// Spawn agents, and manage the ones on the floor.
 #[component]
 fn Agents(
@@ -82,9 +110,52 @@ fn Agents(
     let name = RwSignal::new(String::new());
     let role = RwSignal::new(String::new());
     let cwd = RwSignal::new("~/workspaces".to_string());
-    let command = RwSignal::new("claude".to_string());
+    // Which CLI this agent runs. A name from the catalogue, not a binary — the
+    // hook wiring follows from the engine, and a typed-in command could never
+    // say whether the thing it names reports to the floor.
+    let engine = RwSignal::new("claude".to_string());
+    // ...but a one-off binary should not need registering, so the command stays
+    // overridable. Empty means "whatever the engine runs".
+    let command = RwSignal::new(String::new());
     let is_god = RwSignal::new(false);
     let roster = RwSignal::new(Vec::<Value>::new());
+    let engines = RwSignal::new(Vec::<Value>::new());
+
+    Effect::new(move |_| {
+        let _ = changed.get();
+        leptos::task::spawn_local(async move {
+            if let Ok(v) = api::get_json("/api/engines").await {
+                engines.set(v["engines"].as_array().cloned().unwrap_or_default());
+            }
+        });
+    });
+
+    // What an engine runs, for the line under the picker.
+    let engine_line = move |id: &str| -> String {
+        engines
+            .get()
+            .iter()
+            .find(|e| e["id"].as_str() == Some(id))
+            .map(|e| {
+                let cmd = e["command"].as_str().unwrap_or("");
+                let args = e["args"].as_array().map(|a| {
+                    a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" ")
+                }).unwrap_or_default();
+                let run = if args.is_empty() { cmd.to_string() } else { format!("{cmd} {args}") };
+                let missing = if e["available"].as_bool() == Some(false) {
+                    " — not installed on this machine"
+                } else {
+                    ""
+                };
+                let quiet = if e["hooks"].as_bool() == Some(true) {
+                    ""
+                } else {
+                    " · quiet on the floor"
+                };
+                format!("runs `{run}`{quiet}{missing}")
+            })
+            .unwrap_or_default()
+    };
     // Which of the theme's personalities the new agent gets: an archetype slot,
     // RANDOM, or CUSTOM. Random by default — most hires do not care who they
     // look like, and making them choose first is a toll on the common path.
@@ -177,9 +248,9 @@ fn Agents(
     });
 
     let hire = move |_| {
-        let (mut n, r, c, cmd, god) = (
+        let (mut n, r, c, cmd, god, eng) = (
             name.get_untracked(), role.get_untracked(), cwd.get_untracked(),
-            command.get_untracked(), is_god.get_untracked(),
+            command.get_untracked(), is_god.get_untracked(), engine.get_untracked(),
         );
         let (mut slot, mut line) = (String::new(), persona.get_untracked());
         let (mut post, mut post2) = (primary.get_untracked(), secondary.get_untracked());
@@ -241,11 +312,13 @@ fn Agents(
         leptos::task::spawn_local(async move {
             let opts = json!([{
                 "id": id.trim_matches('-'),
-                "command": cmd,
+                // Only when overridden: an empty string would beat the engine
+                // and spawn a shell.
+                "command": if cmd.trim().is_empty() { Value::Null } else { json!(cmd) },
                 "cwd": c,
                 "cols": 100, "rows": 30,
                 "hive": {
-                    "name": n, "role": r, "isGod": god,
+                    "name": n, "role": r, "isGod": god, "engine": eng,
                     // The chosen personality and posting travel with the spawn
                     // and are stored on the registry entry, so they survive a
                     // restart. Assigning them by ordering on every read would
@@ -421,8 +494,36 @@ fn Agents(
                 <label>"working directory"</label>
                 <input prop:value=move || cwd.get()
                        on:input=move |e| cwd.set(event_target_value(&e))/>
-                <label>"command"</label>
+
+                <label>"engine"</label>
+                <select on:change=move |e| engine.set(event_target_value(&e))>
+                    {move || {
+                        let picked = engine.get();
+                        engines.get().into_iter().map(|x| {
+                            let id = x["id"].as_str().unwrap_or("").to_string();
+                            let mut label = x["label"].as_str().unwrap_or(&id).to_string();
+                            // An engine whose binary is missing is still
+                            // offerable — you register it, then install it —
+                            // but "hired and exited immediately" is a poor way
+                            // to find that out.
+                            if x["available"].as_bool() == Some(false) {
+                                label.push_str(" (not installed)");
+                            }
+                            let sel = picked == id;
+                            view! { <option value=id selected=sel>{label}</option> }
+                        }).collect::<Vec<_>>()
+                    }}
+                </select>
+                <p class="hint">{move || engine_line(&engine.get())}</p>
+
+                <label>"command — leave empty to use the engine\u{2019}s"</label>
                 <input prop:value=move || command.get()
+                       placeholder=move || {
+                           engines.get().iter()
+                               .find(|e| e["id"].as_str() == Some(engine.get().as_str()))
+                               .and_then(|e| e["command"].as_str().map(String::from))
+                               .unwrap_or_default()
+                       }
                        on:input=move |e| command.set(event_target_value(&e))/>
                 <label class="check">
                     <input type="checkbox" prop:checked=move || is_god.get()
@@ -440,11 +541,60 @@ fn Agents(
                         let (i1, i2, i3) = (id.clone(), id.clone(), id.clone());
                         let held = a["onHold"].as_bool().unwrap_or(false);
                         let archived = a["archived"].as_bool().unwrap_or(false);
+                        let mine = a.clone();
+                        let now = a["provider"].as_str().unwrap_or("claude").to_string();
                         view! {
                             <div class="row">
                                 <b>{a["name"].as_str().unwrap_or(&id).to_string()}</b>
                                 <span class="dim">{a["role"].as_str().unwrap_or("").to_string()}</span>
                                 <span class="grow"></span>
+                                // Changing an agent's engine IS restarting it:
+                                // the command is the process, so there is no
+                                // version of this that takes effect without
+                                // one. Said in the hint below rather than in a
+                                // dialog nobody reads.
+                                <select on:change=move |ev| {
+                                    let (a, next) = (mine.clone(), event_target_value(&ev));
+                                    let id = a["id"].as_str().unwrap_or("").to_string();
+                                    status.set(format!("restarting {id} on {next}…"));
+                                    leptos::task::spawn_local(async move {
+                                        let opts = json!([{
+                                            "id": id,
+                                            "cwd": a["cwd"].as_str().unwrap_or("~"),
+                                            "cols": 100, "rows": 30,
+                                            // Resumed, so switching engines
+                                            // does not throw away the thread an
+                                            // agent was in the middle of.
+                                            "resume": true,
+                                            "hive": {
+                                                "name": a["name"].as_str().unwrap_or(""),
+                                                "role": a["role"].as_str().unwrap_or(""),
+                                                "isGod": a["isGod"].as_bool().unwrap_or(false),
+                                                "engine": next,
+                                                "archetype": a["archetype"].as_str().unwrap_or(""),
+                                                "primaryPoi": a["primaryPoi"].as_str().unwrap_or(""),
+                                                "secondaryPoi": a["secondaryPoi"].as_str().unwrap_or(""),
+                                            },
+                                        }]);
+                                        match restart(a["id"].as_str().unwrap_or(""), opts).await {
+                                            Ok(v) if v["ok"] == true => status.set("restarted".into()),
+                                            Ok(v) => status.set(
+                                                v["error"].as_str().unwrap_or("could not restart").to_string()),
+                                            Err(e) => status.set(e),
+                                        }
+                                        changed.update(|n| *n = n.wrapping_add(1));
+                                    });
+                                }>
+                                    {move || {
+                                        let now = now.clone();
+                                        engines.get().into_iter().map(|x| {
+                                            let eid = x["id"].as_str().unwrap_or("").to_string();
+                                            let label = x["label"].as_str().unwrap_or(&eid).to_string();
+                                            let sel = now == eid;
+                                            view! { <option value=eid selected=sel>{label}</option> }
+                                        }).collect::<Vec<_>>()
+                                    }}
+                                </select>
                                 <button class="ghost" on:click=move |_| {
                                     let id = i1.clone();
                                     leptos::task::spawn_local(async move {
@@ -471,6 +621,11 @@ fn Agents(
                     }
                 </For>
                 <p class="hint">
+                    "An agent\u{2019}s engine is the process it runs, so changing it stops and
+                     starts that agent. Its session is resumed where the engine can, and its
+                     memory, transcript and desk are untouched either way."
+                </p>
+                <p class="hint">
                     "Switching themes changes the costume only. Recasting is the real
                      thing: every agent is held, renamed, and its identity rewritten with
                      its new character — then released so its work resumes. Memory,
@@ -480,6 +635,203 @@ fn Agents(
             </section>
         </div>
     }
+}
+
+/// The agent CLIs this floor can hire.
+///
+/// A catalogue rather than a text box, because "which command" is not the only
+/// question — whether the CLI speaks Claude Code's hook protocol decides whether
+/// its agent narrates itself on the floor or works in silence, and no binary
+/// name can answer that.
+#[component]
+fn Engines(status: RwSignal<String>) -> impl IntoView {
+    let list = RwSignal::new(Vec::<Value>::new());
+    // The tenant's own overrides, kept raw so a save can send the whole map.
+    let raw = RwSignal::new(serde_json::Map::new());
+
+    let load = move || {
+        leptos::task::spawn_local(async move {
+            if let Ok(v) = api::get_json("/api/engines").await {
+                list.set(v["engines"].as_array().cloned().unwrap_or_default());
+            }
+            if let Ok(cfg) = api::rpc("config:get", json!([])).await {
+                raw.set(cfg["engines"].as_object().cloned().unwrap_or_default());
+            }
+        });
+    };
+    Effect::new(move |_| load());
+
+    // `config:update` merges only at the TOP level, so sending part of the
+    // engines map would delete the rest of it. Every save sends all of it.
+    let write = move |next: serde_json::Map<String, Value>| {
+        status.set("saving…".into());
+        leptos::task::spawn_local(async move {
+            match api::rpc("config:update", json!([{ "engines": Value::Object(next) }])).await {
+                Ok(_) => status.set("saved".into()),
+                Err(e) => status.set(e),
+            }
+            load();
+        });
+    };
+    let patch = move |id: String, fields: Vec<(&'static str, Value)>| {
+        let mut map = raw.get_untracked();
+        let entry = map.entry(id).or_insert_with(|| json!({}));
+        if let Some(o) = entry.as_object_mut() {
+            for (k, v) in fields {
+                if v.is_null() {
+                    o.remove(k);
+                } else {
+                    o.insert(k.into(), v);
+                }
+            }
+        }
+        write(map);
+    };
+    let forget = move |id: String| {
+        let mut map = raw.get_untracked();
+        map.remove(&id);
+        write(map);
+    };
+
+    let (nid, nlabel, ncmd, nargs, nhooks) = (
+        RwSignal::new(String::new()), RwSignal::new(String::new()),
+        RwSignal::new(String::new()), RwSignal::new(String::new()),
+        RwSignal::new(false),
+    );
+
+    let register = move |_| {
+        let id: String = nid.get_untracked().trim().to_lowercase().chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let id = id.trim_matches('-').to_string();
+        let cmd = ncmd.get_untracked();
+        if id.is_empty() || cmd.trim().is_empty() {
+            status.set("an engine needs a name and a command".into());
+            return;
+        }
+        let mut map = raw.get_untracked();
+        map.insert(id, json!({
+            "label": if nlabel.get_untracked().trim().is_empty() {
+                json!(Value::Null)
+            } else {
+                json!(nlabel.get_untracked())
+            },
+            "command": cmd,
+            "args": args_of(&nargs.get_untracked()),
+            "hooks": nhooks.get_untracked(),
+        }));
+        nid.set(String::new());
+        nlabel.set(String::new());
+        ncmd.set(String::new());
+        nargs.set(String::new());
+        nhooks.set(false);
+        write(map);
+    };
+
+    view! {
+        <div class="cfg-cols">
+            <section>
+                <h3>"Register an engine"</h3>
+                <label>"name"</label>
+                <input prop:value=move || nid.get() placeholder="my-agent"
+                       on:input=move |e| nid.set(event_target_value(&e))/>
+                <label>"shown as"</label>
+                <input prop:value=move || nlabel.get() placeholder="My Agent"
+                       on:input=move |e| nlabel.set(event_target_value(&e))/>
+                <label>"command"</label>
+                <input prop:value=move || ncmd.get() placeholder="my-agent"
+                       on:input=move |e| ncmd.set(event_target_value(&e))/>
+                <label>"arguments"</label>
+                <input prop:value=move || nargs.get() placeholder="--repl --model fast"
+                       on:input=move |e| nargs.set(event_target_value(&e))/>
+                <label class="check">
+                    <input type="checkbox" prop:checked=move || nhooks.get()
+                           on:change=move |e| nhooks.set(event_target_checked(&e))/>
+                    "speaks Claude Code\u{2019}s hook protocol"
+                </label>
+                <button on:click=register>"register"</button>
+                <p class="hint">
+                    "Tick the hook box only if the CLI really does accept Claude Code\u{2019}s
+                     --settings and report its tool calls. An engine that claims hooks it
+                     does not have puts an agent on the floor that looks alive and never
+                     says anything."
+                </p>
+            </section>
+
+            <section>
+                <h3>"Engines"</h3>
+                <For each=move || list.get() key=|e| e["id"].as_str().unwrap_or("").to_string() let:e>
+                    {
+                        let id = e["id"].as_str().unwrap_or("").to_string();
+                        let (i1, i2) = (id.clone(), id.clone());
+                        let builtin = e["builtin"].as_bool().unwrap_or(false);
+                        let hooks = e["hooks"].as_bool().unwrap_or(false);
+                        let ok = e["available"].as_bool().unwrap_or(false);
+                        let cmd = RwSignal::new(e["command"].as_str().unwrap_or("").to_string());
+                        let argv = RwSignal::new(
+                            e["args"].as_array().map(|a| a.iter()
+                                .filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" "))
+                                .unwrap_or_default());
+                        view! {
+                            <div class="row tool">
+                                <b>{e["label"].as_str().unwrap_or(&id).to_string()}</b>
+                                <span class=if hooks { "tag" } else { "tag warn" }>
+                                    {if hooks { "reports" } else { "quiet" }}
+                                </span>
+                                <span class=if ok { "tag" } else { "tag warn" }>
+                                    {if ok { "installed" } else { "missing" }}
+                                </span>
+                                <span class="grow"></span>
+                                <input prop:value=move || cmd.get()
+                                       on:input=move |ev| cmd.set(event_target_value(&ev))/>
+                                <input prop:value=move || argv.get() placeholder="arguments"
+                                       on:input=move |ev| argv.set(event_target_value(&ev))/>
+                                <button class="ghost" on:click=move |_| {
+                                    patch(i1.clone(), vec![
+                                        ("command", json!(cmd.get_untracked())),
+                                        ("args", json!(args_of(&argv.get_untracked()))),
+                                    ]);
+                                }>"save"</button>
+                                // A built-in is hidden rather than deleted: its
+                                // definition comes back on the next release, so
+                                // a "delete" would silently undo itself.
+                                <button class="ghost danger" on:click=move |_| {
+                                    if builtin {
+                                        patch(i2.clone(), vec![("hidden", json!(true))]);
+                                    } else {
+                                        forget(i2.clone());
+                                    }
+                                }>{if builtin { "hide" } else { "remove" }}</button>
+                            </div>
+                        }
+                    }
+                </For>
+                <p class="hint">
+                    "\u{201C}Reports\u{201D} means the CLI tells the floor what it is doing, so its
+                     agent walks to the shelves when it reads and to the terminal when it
+                     runs something. A quiet engine still works and still takes mail typed
+                     into its prompt \u{2014} it just stands still."
+                </p>
+                <Show when=move || raw.get().values().any(|v| v["hidden"] == true)>
+                    <button class="ghost" on:click=move |_| {
+                        let mut map = raw.get_untracked();
+                        map.retain(|_, v| v["hidden"] != true || {
+                            v.as_object_mut().map(|o| o.remove("hidden"));
+                            !v.as_object().map(|o| o.is_empty()).unwrap_or(true)
+                        });
+                        write(map);
+                    }>"show hidden engines"</button>
+                </Show>
+            </section>
+        </div>
+    }
+}
+
+/// A command line as a list of arguments. Whitespace-split, deliberately: an
+/// engine that needs a quoted argument with a space in it should be a script,
+/// not a parsing problem here.
+fn args_of(s: &str) -> Vec<String> {
+    s.split_whitespace().map(String::from).collect()
 }
 
 #[component]
@@ -552,10 +904,15 @@ fn Preferences(status: RwSignal<String>, theme_idx: RwSignal<usize>) -> impl Int
 #[component]
 fn Tools(status: RwSignal<String>) -> impl IntoView {
     let list = RwSignal::new(Vec::<Value>::new());
+    // The stored consent, so a toggle can send it back whole.
+    let raw = RwSignal::new(serde_json::Map::new());
     let load = move || {
         leptos::task::spawn_local(async move {
             if let Ok(v) = api::get_json("/api/mcp").await {
                 list.set(v["catalog"].as_array().cloned().unwrap_or_default());
+            }
+            if let Ok(cfg) = api::rpc("config:get", json!([])).await {
+                raw.set(cfg["mcpDefaults"].as_object().cloned().unwrap_or_default());
             }
         });
     };
@@ -580,8 +937,15 @@ fn Tools(status: RwSignal<String>) -> impl IntoView {
                                 <input type="checkbox" prop:checked=on on:change=move |ev| {
                                     let (id, next) = (id.clone(), event_target_checked(&ev));
                                     status.set("saving…".into());
+                                    // The whole map, not just this server.
+                                    // `config:update` merges at the TOP level
+                                    // only, so sending one entry replaced
+                                    // `mcpDefaults` wholesale and every other
+                                    // server silently reverted to its default.
+                                    let mut all = raw.get_untracked();
+                                    all.insert(id, json!({ "enabled": next }));
                                     leptos::task::spawn_local(async move {
-                                        let patch = json!([{ "mcpDefaults": { id: { "enabled": next } } }]);
+                                        let patch = json!([{ "mcpDefaults": Value::Object(all) }]);
                                         match api::rpc("config:update", patch).await {
                                             Ok(_) => status.set("saved".into()),
                                             Err(e) => status.set(e),

@@ -12,6 +12,7 @@ use md_tenant::{SpawnRequest, TenantId, TenantPaths};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
+use crate::engines;
 use crate::git;
 use crate::hive;
 use crate::spawn;
@@ -864,6 +865,10 @@ pub fn recast(ctx: &Ctx) -> RpcResponse {
     let hive = hive::Hive::new(ctx.paths.hive_root());
     let control = ctx.state.control(&ctx.tenant);
     let reg = hive.registry();
+    let config: Value = std::fs::read_to_string(ctx.paths.config_file())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| json!({}));
 
     // 1. Hold everyone first — all of them, before any rebuild, so no agent is
     //    handed work while the floor is half-renamed.
@@ -898,6 +903,12 @@ pub fn recast(ctx: &Ctx) -> RpcResponse {
             id: id.to_string(),
             name: name.to_string(),
             provider: a["provider"].as_str().unwrap_or("claude").to_string(),
+            // A recast changes who an agent IS, never what it runs — so the
+            // hook wiring is read back from the engine the agent was hired
+            // against rather than re-decided here.
+            hooks: engines::resolve(&config, a["provider"].as_str().unwrap_or("claude"))
+                .is_some_and(|e| e.hooks),
+            command: a["command"].as_str().map(String::from),
             role: a["role"].as_str().map(String::from),
             cwd: a["cwd"].as_str().unwrap_or("").to_string(),
             is_god: a["isGod"].as_bool().unwrap_or(false),
@@ -1867,6 +1878,47 @@ fn fs_write_file(ctx: &Ctx) -> RpcResponse {
     }
 }
 
+/// What a spawn request decided to run.
+struct Chosen {
+    engine: Option<engines::Engine>,
+    engine_id: String,
+    command: String,
+}
+
+/// Which CLI a spawn runs, and under which engine.
+///
+/// Split out because the precedence is the whole of it and it is otherwise
+/// buried in a function that needs a pty, a sandbox and a tenant to call:
+///
+/// 1. An explicit `command` wins, so a one-off binary needs no registration.
+/// 2. Otherwise the named engine's command — `engine`, or the `provider` an
+///    older client sends, which is the same identifier.
+/// 3. Failing both, a shell, because a spawn with nothing to run is worse than
+///    a spawn you can see went nowhere.
+///
+/// The engine is returned alongside even when the command was overridden: the
+/// hook wiring comes from the engine, and someone running a wrapper script
+/// around Claude Code still wants the hooks.
+fn choose_engine(config: &Value, opts: &Value) -> Chosen {
+    let engine_id = opts
+        .get("engine")
+        .or_else(|| opts.pointer("/hive/engine"))
+        .or_else(|| opts.pointer("/hive/provider"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("claude")
+        .to_string();
+    let engine = engines::resolve(config, &engine_id);
+    let command = opts
+        .get("command")
+        .and_then(|v| v.as_str())
+        .filter(|c| !c.trim().is_empty())
+        .map(String::from)
+        .or_else(|| engine.as_ref().map(|e| e.command.clone()))
+        .unwrap_or_else(|| "bash".to_string());
+    Chosen { engine, engine_id, command }
+}
+
 /// Where the shim lives inside the agent's environment. Overridable because the
 /// container path and a local dev build differ; the default matches the image.
 fn hook_bin() -> String {
@@ -1879,11 +1931,19 @@ fn pty_spawn(ctx: &Ctx) -> RpcResponse {
         Some(s) => s.to_string(),
         None => return RpcResponse::err(ErrorCode::BadArguments, "spawn options need an `id`"),
     };
-    let command = opts.get("command").and_then(|v| v.as_str()).unwrap_or("bash").to_string();
+    let config: Value = std::fs::read_to_string(ctx.paths.config_file())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| json!({}));
+    let Chosen { engine, engine_id, command } = choose_engine(&config, &opts);
     let raw_cwd = opts.get("cwd").and_then(|v| v.as_str()).unwrap_or("~").to_string();
     let cwd = tri!(ctx.resolve(&raw_cwd));
-    let mut args: Vec<String> = opts.get("args")
+    // The engine's own arguments come first, so a resume flag and the identity
+    // injection append after them rather than in front of a subcommand.
+    let mut args: Vec<String> = opts
+        .get("args")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .or_else(|| engine.as_ref().map(|e| e.args.clone()))
         .unwrap_or_default();
     let cols = opts.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
     let rows = opts.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
@@ -1901,9 +1961,13 @@ fn pty_spawn(ctx: &Ctx) -> RpcResponse {
         let m = spawn::AgentMeta {
             id: id.clone(),
             name: meta.get("name").and_then(|v| v.as_str()).unwrap_or(&id).to_string(),
-            provider: meta.get("provider").and_then(|v| v.as_str()).unwrap_or("claude").to_string(),
+            // The engine id IS the provider id: one name for "which CLI is
+            // this", rather than two that can disagree.
+            provider: engine.as_ref().map(|e| e.id.clone()).unwrap_or_else(|| engine_id.clone()),
             role: meta.get("role").and_then(|v| v.as_str()).map(String::from),
             cwd: cwd.display().to_string(),
+            hooks: engine.as_ref().is_some_and(|e| e.hooks),
+            command: Some(command.clone()),
             is_god: meta.get("isGod").and_then(|v| v.as_bool()).unwrap_or(false),
             persona: meta.get("persona").and_then(|v| v.as_str()).map(String::from),
             archetype: meta.get("archetype").and_then(|v| v.as_str()).map(String::from),
@@ -2043,6 +2107,64 @@ fn pty_list(ctx: &Ctx) -> RpcResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn opts(v: Value) -> Value {
+        v
+    }
+
+    #[test]
+    fn a_spawn_with_no_opinion_runs_claude() {
+        let c = choose_engine(&json!({}), &opts(json!({})));
+        assert_eq!((c.engine_id.as_str(), c.command.as_str()), ("claude", "claude"));
+        assert!(c.engine.unwrap().hooks);
+    }
+
+    #[test]
+    fn a_named_engine_supplies_its_own_command() {
+        let c = choose_engine(&json!({}), &opts(json!({ "hive": { "engine": "gemini" } })));
+        assert_eq!(c.command, "gemini");
+        assert!(!c.engine.unwrap().hooks, "gemini is not wired for hooks");
+    }
+
+    /// An older client sends the engine as `provider`. Same identifier, so it
+    /// must resolve rather than silently falling back to Claude and starting
+    /// the wrong CLI.
+    #[test]
+    fn provider_is_accepted_as_the_engine_name() {
+        let c = choose_engine(&json!({}), &opts(json!({ "hive": { "provider": "codex" } })));
+        assert_eq!((c.engine_id.as_str(), c.command.as_str()), ("codex", "codex"));
+    }
+
+    /// A wrapper script around Claude Code is still Claude Code. The command is
+    /// overridden; the hooks are not, or the agent would go silent for the sake
+    /// of a shim.
+    #[test]
+    fn an_explicit_command_overrides_the_engine_but_keeps_its_hooks() {
+        let c = choose_engine(
+            &json!({}),
+            &opts(json!({ "command": "./run-claude.sh", "hive": { "engine": "claude" } })),
+        );
+        assert_eq!(c.command, "./run-claude.sh");
+        assert!(c.engine.unwrap().hooks);
+    }
+
+    #[test]
+    fn a_registered_engine_is_chosen_like_any_other() {
+        let cfg = json!({ "engines": { "mine": { "command": "my-agent", "hooks": true } } });
+        let c = choose_engine(&cfg, &opts(json!({ "hive": { "engine": "mine" } })));
+        assert_eq!(c.command, "my-agent");
+        assert!(c.engine.unwrap().hooks, "a tenant may declare its own CLI hooked");
+    }
+
+    /// An engine that was deleted after an agent was hired against it must not
+    /// take the floor down: the agent starts in a shell and is visibly wrong,
+    /// rather than the spawn failing in a way nobody can act on.
+    #[test]
+    fn an_unknown_engine_falls_back_to_a_shell_without_hooks() {
+        let c = choose_engine(&json!({}), &opts(json!({ "hive": { "engine": "vanished" } })));
+        assert_eq!(c.command, "bash");
+        assert!(c.engine.is_none());
+    }
 
     #[test]
     fn tilde_resolves_to_the_tenant_home_not_the_server_user() {

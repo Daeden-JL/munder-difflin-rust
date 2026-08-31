@@ -1,12 +1,16 @@
 //! Agent provisioning: what has to exist on disk before an agent CLI starts,
 //! and what has to be handed to it so it joins the hive.
 //!
-//! Scope is the **claude** provider. The Electron original also bridges hookless
-//! CLIs (`agy`, `codex`, `pi`, and a reverse-proxy sidecar for `qwen`), each
-//! with its own shim and config layout; that is a separate surface and is not
-//! ported. Provisioning refuses an unknown provider rather than silently
-//! producing an agent with no hooks, which would look spawned but be invisible
-//! to the floor.
+//! Which CLI an agent runs is an ENGINE, defined in `engines.rs` and chosen per
+//! agent. Provisioning cares about exactly one thing from it: whether the CLI
+//! speaks Claude Code's hook and settings protocol. A hooked engine is wired to
+//! report; a hookless one spawns bare and reaches the hive through the terminal
+//! handoff instead.
+//!
+//! The Electron original also bridges hookless CLIs (`agy`, `codex`, `pi`, and a
+//! reverse-proxy sidecar for `qwen`), each with its own shim and config layout;
+//! that is a separate surface and is not ported, which is why the catalogue
+//! marks only Claude Code as hooked.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -44,6 +48,18 @@ pub struct AgentMeta {
     pub archetype: Option<String>,
     pub primary_poi: Option<String>,
     pub secondary_poi: Option<String>,
+    /// Whether this agent's CLI speaks Claude Code's hook and settings
+    /// protocol.
+    ///
+    /// Resolved from the engine by the caller rather than inferred from the
+    /// provider name here. `provider == "claude"` was true of the only engine
+    /// that existed; the moment a tenant can register its own, the name says
+    /// nothing about the protocol and a hard-coded comparison would silently
+    /// deny hooks to a CLI that has them.
+    pub hooks: bool,
+    /// What was actually run, recorded so the roster can show it. Derived from
+    /// the engine unless the caller overrode it.
+    pub command: Option<String>,
 }
 
 /// What the PTY spawn needs to add so the agent is hive-aware.
@@ -151,7 +167,7 @@ impl Provisioner<'_> {
         // into their REPL — which is the same path the original uses for a
         // hookless CLI. Refusing them outright, as this did, kept a working
         // delivery route unavailable for want of an unrelated bridge.
-        let hooked = meta.provider == "claude";
+        let hooked = meta.hooks;
         if meta.id.trim().is_empty() {
             return Err("agent needs an id".into());
         }
@@ -269,6 +285,10 @@ impl Provisioner<'_> {
             ("id", json!(meta.id)),
             ("name", json!(meta.name)),
             ("provider", json!(meta.provider)),
+            // What ran, so the roster can say so without re-resolving the
+            // engine — and so an agent hired against an engine that was later
+            // edited still shows what it actually started with.
+            ("command", json!(meta.command.clone().unwrap_or_else(|| meta.provider.clone()))),
             ("role", json!(role)),
             ("cwd", json!(meta.cwd)),
             ("isGod", json!(meta.is_god)),
@@ -449,6 +469,8 @@ mod tests {
             archetype: None,
             primary_poi: None,
             secondary_poi: None,
+            hooks: true,
+            command: Some("claude".into()),
         }
     }
 
@@ -588,6 +610,11 @@ mod tests {
                                   config_file: std::env::temp_dir().join("no-config.json") };
         let mut m = meta("ryan");
         m.provider = "codex".into();
+        m.command = Some("codex".into());
+        // The ENGINE says it is hookless, not the name: a tenant may register
+        // something called anything at all and declare that it speaks the
+        // protocol, and a name comparison would have got that wrong.
+        m.hooks = false;
 
         let inj = p.ensure_agent(&m).unwrap();
         assert!(inj.args.is_empty(), "no Claude flags: {:?}", inj.args);
@@ -596,6 +623,7 @@ mod tests {
         assert!(root.join("agents/ryan/identity.md").exists());
         assert!(root.join("agents/ryan/inbox").is_dir());
         assert_eq!(hive.registry()["agents"]["ryan"]["provider"], "codex");
+        assert_eq!(hive.registry()["agents"]["ryan"]["command"], "codex");
         // But no hook settings, because nothing would read them.
         assert!(!root.join("agents/ryan/settings.json").exists());
         // The env still carries identity, which the handoff prompt refers to.

@@ -11,6 +11,7 @@ pub mod hive;
 pub mod integrations;
 pub mod knowledge;
 pub mod handlers;
+pub mod engines;
 pub mod mcp;
 pub mod misc;
 pub mod realtime;
@@ -146,6 +147,7 @@ pub async fn build(cfg: &ServerConfig, accounts: Arc<accounts::Accounts>, sandbo
         .route("/api/health", get(health))
         .route("/api/me", get(me))
         .route("/api/mcp", get(mcp_catalog))
+        .route("/api/engines", get(engine_catalog))
         // Web-native, like /api/transcript: the Electron bridge had no recast
         // channel, and adding one to the generated enum would make the parity
         // numbers describe a contract that never existed.
@@ -452,6 +454,20 @@ async fn mcp_catalog(
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_else(|| serde_json::json!({}));
     Json(serde_json::json!({ "catalog": mcp::catalog_view(&cfg) }))
+}
+
+/// The engines this tenant can hire, with the built-ins its config has changed
+/// already merged in, and whether each one's command is actually installed.
+async fn engine_catalog(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    auth::Tenant(tenant): auth::Tenant,
+) -> Json<serde_json::Value> {
+    let cfg = state
+        .paths(&tenant)
+        .and_then(|p| std::fs::read_to_string(p.config_file()).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    Json(serde_json::json!({ "engines": engines::view(&cfg) }))
 }
 
 /// Rename the floor to a theme's cast, rebuilding each agent's identity.

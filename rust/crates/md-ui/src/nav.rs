@@ -140,6 +140,10 @@ impl Nav {
     /// is right at runtime and useless to a test — asserting on the route's
     /// last point says nothing, because an unreachable target is still its own
     /// last point.
+    // Unused by the running floor on purpose: nothing at runtime should ask
+    // "is this reachable" and then decline to walk. The theme tests ask, which
+    // is where an unreachable room has to be caught.
+    #[allow(dead_code)]
     pub fn connected(&self, from: [f64; 2], to: [f64; 2]) -> bool {
         match (self.zone(self.snap(from)), self.zone(self.snap(to))) {
             (Some(a), Some(b)) => self.rooms(a, b).is_some(),
