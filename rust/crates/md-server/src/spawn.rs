@@ -416,12 +416,25 @@ impl Provisioner<'_> {
             ),
             _ => String::new(),
         };
+        // Only the orchestrator is told it can ask for tools, because only the
+        // orchestrator may: a worker that read this would spend a turn being
+        // refused, and telling every agent about a door it cannot open is a
+        // reliable way to have them all try it.
+        let tools = if meta.is_god {
+            " You can also ask the floor itself for a new tool: write a message to \
+             `harness` with a `tool` object — {\"id\", \"label\", \"description\", \
+             \"command\", \"args\"} — and it is registered SWITCHED OFF. It reaches \
+             nobody until the person running this floor turns it on, so say plainly \
+             what it is for and why, and carry on without it in the meantime."
+        } else {
+            ""
+        };
         format!(
             "You are {name}, agent `{id}` on a Munder Difflin floor.{persona} Your identity is at \
              `{dir}/identity.md` and your durable memory at `{dir}/memory.md` — read both \
              before acting. Mail arrives as JSON files in `{dir}/inbox/`; move each to \
              `inbox/.done` once handled. To send mail, write a JSON message into \
-             `{dir}/outbox/`. The shared board is `{root}/board.md`.",
+             `{dir}/outbox/`. The shared board is `{root}/board.md`.{tools}",
             name = meta.name,
             id = meta.id,
             dir = dir.display(),
@@ -477,6 +490,25 @@ mod tests {
     /// A hire's chosen personality and posting must outlive the process that
     /// made it. A respawn carries no opinion about the floor, so writing one
     /// would silently un-post every agent the first time anything restarted.
+    /// The orchestrator is told it can ask for a tool, and told the answer is
+    /// always "off until a person says otherwise" — an agent that expects the
+    /// tool to work immediately will build on sand.
+    #[test]
+    fn only_the_orchestrator_is_told_it_can_ask_for_tools() {
+        let (root, hive) = setup();
+        let p = Provisioner { hive: &hive, hive_root: root.clone(), hook_bin: "md-hook".into(),
+                                  config_file: std::env::temp_dir().join("no-config.json") };
+
+        let mut god = meta("michael");
+        god.is_god = true;
+        let prompt = p.injected_prompt(&god, &root.join("agents/michael"));
+        assert!(prompt.contains("harness"), "the orchestrator is told how to ask");
+        assert!(prompt.contains("SWITCHED OFF"), "and told it will not be armed by asking");
+
+        let worker = p.injected_prompt(&meta("dwight"), &root.join("agents/dwight"));
+        assert!(!worker.contains("harness"), "a worker is not told about a door it cannot open");
+    }
+
     #[test]
     fn a_chosen_personality_and_posting_survive_a_respawn() {
         let (root, hive) = setup();

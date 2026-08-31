@@ -76,6 +76,14 @@ fn spawn_tenant_services(state: &AppState, tenant: &TenantId) {
                 continue;
             };
             for r in routed {
+                // A message addressed to the floor itself is a request to
+                // change it, not mail — the router deliberately delivered it to
+                // nobody and left acting on it to here, where the tenant's
+                // config is in reach.
+                if r.message["to"] == hive::HARNESS {
+                    handlers::harness_request(&state, &tenant, &paths, &r.message);
+                    continue;
+                }
                 handlers::announce_routed(&state, &tenant, &paths, &r.message, &r.delivered);
             }
         }

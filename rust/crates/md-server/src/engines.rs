@@ -34,11 +34,16 @@ pub struct Builtin {
     pub hooks: bool,
 }
 
+/// The presets the Electron original shipped, plus a local-model runner and a
+/// plain shell. `custom` is not among them: an engine with no command is not an
+/// engine, and registering your own is what the panel is for.
+///
 /// Only `claude` is hooked, and that is a statement about this port rather than
-/// about the CLIs: the original bridges Codex and Gemini with translating shims
-/// and Qwen with a reverse-proxy sidecar, and none of that is ported. Claiming
-/// hooks an engine does not have would put an agent on the floor that looks live
-/// and reports nothing, which is worse than admitting it is quiet.
+/// about the CLIs: the original bridges Antigravity, Codex and Grok with
+/// translating shims and Qwen with a reverse-proxy sidecar, and none of that is
+/// ported. Claiming hooks an engine does not have would put an agent on the
+/// floor that looks live and reports nothing, which is worse than admitting it
+/// is quiet.
 pub const CATALOG: &[Builtin] = &[
     Builtin {
         id: "claude", label: "Claude Code",
@@ -47,7 +52,7 @@ pub const CATALOG: &[Builtin] = &[
         command: "claude", args: &[], hooks: true,
     },
     Builtin {
-        id: "codex", label: "Codex CLI",
+        id: "codex", label: "Codex · GPT",
         description: "OpenAI's coding CLI. Runs, but is quiet on the floor.",
         command: "codex", args: &[], hooks: false,
     },
@@ -57,8 +62,24 @@ pub const CATALOG: &[Builtin] = &[
         command: "gemini", args: &[], hooks: false,
     },
     Builtin {
+        id: "antigravity", label: "Antigravity · Gemini",
+        description: "Antigravity's agent CLI, on Gemini models. Quiet on the floor.",
+        command: "agy", args: &[], hooks: false,
+    },
+    Builtin {
+        id: "grok", label: "Grok · xAI",
+        description: "xAI's coding CLI. Quiet on the floor.",
+        command: "grok", args: &[], hooks: false,
+    },
+    Builtin {
+        id: "kimi", label: "Kimi Code",
+        description: "Moonshot's coding CLI. Quiet on the floor, and takes no \
+                      inbox mail — work reaches it typed into its prompt.",
+        command: "kimi", args: &[], hooks: false,
+    },
+    Builtin {
         id: "qwen", label: "Qwen Code",
-        description: "Alibaba's coding CLI. Runs, but is quiet on the floor.",
+        description: "Alibaba's coding CLI. Quiet on the floor.",
         command: "qwen", args: &[], hooks: false,
     },
     Builtin {
@@ -67,13 +88,29 @@ pub const CATALOG: &[Builtin] = &[
         command: "opencode", args: &[], hooks: false,
     },
     Builtin {
-        id: "crush", label: "Crush",
+        id: "crush", label: "Crush · Charm",
         description: "Charm's terminal agent. Quiet on the floor.",
         command: "crush", args: &[], hooks: false,
     },
     Builtin {
+        id: "pi", label: "Pi",
+        description: "The Pi coding CLI. Quiet on the floor.",
+        command: "pi", args: &[], hooks: false,
+    },
+    Builtin {
+        id: "copilot", label: "Copilot",
+        description: "GitHub Copilot's CLI. Quiet on the floor, and takes no \
+                      inbox mail — work reaches it typed into its prompt.",
+        command: "copilot", args: &[], hooks: false,
+    },
+    Builtin {
+        id: "cursor", label: "Cursor",
+        description: "Cursor's headless agent. Quiet on the floor.",
+        command: "cursor-agent", args: &[], hooks: false,
+    },
+    Builtin {
         id: "ollama", label: "Ollama",
-        description: "A model running on this machine. Set the model in the \
+        description: "A model running on this machine. Set which one in the \
                       arguments.",
         command: "ollama", args: &["run", "llama3.2"], hooks: false,
     },
@@ -83,6 +120,7 @@ pub const CATALOG: &[Builtin] = &[
         command: "bash", args: &[], hooks: false,
     },
 ];
+
 
 /// One engine, built-in defaults merged with whatever the tenant changed.
 #[derive(Debug, Clone, PartialEq)]
@@ -257,6 +295,17 @@ mod tests {
         // Exactly one hooked engine, and it says so: claiming hooks an engine
         // does not have puts an agent on the floor that reports nothing.
         assert_eq!(list.iter().filter(|e| e.hooks).count(), 1);
+        // Every preset the original shipped, so switching floors does not mean
+        // losing the CLI you were using.
+        for id in ["claude", "codex", "grok", "kimi", "gemini", "antigravity",
+                   "qwen", "opencode", "crush", "pi", "copilot", "cursor"] {
+            assert!(list.iter().any(|e| e.id == id), "{id} is missing from the catalogue");
+        }
+        let mut ids: Vec<&str> = list.iter().map(|e| e.id.as_str()).collect();
+        let n = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), n, "two engines share an id");
     }
 
     #[test]

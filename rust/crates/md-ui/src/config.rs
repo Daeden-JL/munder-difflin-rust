@@ -900,11 +900,13 @@ fn Preferences(status: RwSignal<String>, theme_idx: RwSignal<usize>) -> impl Int
     }
 }
 
-/// MCP servers, and the consent that arms them.
+/// The tools agents can reach, the consent that arms them, and registering new
+/// ones.
 #[component]
 fn Tools(status: RwSignal<String>) -> impl IntoView {
     let list = RwSignal::new(Vec::<Value>::new());
-    // The stored consent, so a toggle can send it back whole.
+    // The stored consent and registrations, so a change can send them back
+    // whole.
     let raw = RwSignal::new(serde_json::Map::new());
     let load = move || {
         leptos::task::spawn_local(async move {
@@ -918,52 +920,157 @@ fn Tools(status: RwSignal<String>) -> impl IntoView {
     };
     Effect::new(move |_| load());
 
+    // `config:update` merges at the TOP level only, so sending one entry
+    // replaced `mcpDefaults` wholesale and every other server silently reverted
+    // to its default. Every change sends the whole map.
+    let write = move |next: serde_json::Map<String, Value>| {
+        status.set("saving…".into());
+        leptos::task::spawn_local(async move {
+            match api::rpc("config:update", json!([{ "mcpDefaults": Value::Object(next) }])).await {
+                Ok(_) => status.set("saved".into()),
+                Err(e) => status.set(e),
+            }
+            load();
+        });
+    };
+    let set_fields = move |id: String, fields: Vec<(&'static str, Value)>| {
+        let mut map = raw.get_untracked();
+        let entry = map.entry(id).or_insert_with(|| json!({}));
+        if let Some(o) = entry.as_object_mut() {
+            for (k, v) in fields {
+                o.insert(k.into(), v);
+            }
+        }
+        write(map);
+    };
+    let forget = move |id: String| {
+        let mut map = raw.get_untracked();
+        map.remove(&id);
+        write(map);
+    };
+
+    let (nid, nlabel, ncmd, nargs, nsafe) = (
+        RwSignal::new(String::new()), RwSignal::new(String::new()),
+        RwSignal::new(String::new()), RwSignal::new(String::new()),
+        RwSignal::new(false),
+    );
+    let register = move |_| {
+        let id: String = nid.get_untracked().trim().to_lowercase().chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let id = id.trim_matches('-').to_string();
+        let cmd = ncmd.get_untracked();
+        if id.is_empty() || cmd.trim().is_empty() {
+            status.set("a tool needs a name and a command".into());
+            return;
+        }
+        let mut map = raw.get_untracked();
+        map.insert(id, json!({
+            "label": nlabel.get_untracked(),
+            "command": cmd,
+            "args": args_of(&nargs.get_untracked()),
+            // Declaring it safe is what arms it. Anything else waits for the
+            // switch, which is the same rule the bundled servers follow.
+            "tier": if nsafe.get_untracked() { "safe-readonly" } else { "write" },
+        }));
+        nid.set(String::new());
+        nlabel.set(String::new());
+        ncmd.set(String::new());
+        nargs.set(String::new());
+        nsafe.set(false);
+        write(map);
+    };
+
     view! {
-        <section class="wide">
-            <h3>"Tool servers (MCP)"</h3>
-            <p class="hint">
-                "Read-only servers are on by default. Anything that writes outside the
-                 workspace or needs a credential stays off until you turn it on here —
-                 a default can never arm one."
-            </p>
-            <For each=move || list.get() key=|e| e["id"].as_str().unwrap_or("").to_string() let:e>
-                {
-                    let id = e["id"].as_str().unwrap_or("").to_string();
-                    let on = e["enabled"].as_bool().unwrap_or(false);
-                    let tier = e["tier"].as_str().unwrap_or("").to_string();
-                    view! {
-                        <div class="row tool">
-                            <label class="check">
-                                <input type="checkbox" prop:checked=on on:change=move |ev| {
-                                    let (id, next) = (id.clone(), event_target_checked(&ev));
-                                    status.set("saving…".into());
-                                    // The whole map, not just this server.
-                                    // `config:update` merges at the TOP level
-                                    // only, so sending one entry replaced
-                                    // `mcpDefaults` wholesale and every other
-                                    // server silently reverted to its default.
-                                    let mut all = raw.get_untracked();
-                                    all.insert(id, json!({ "enabled": next }));
-                                    leptos::task::spawn_local(async move {
-                                        let patch = json!([{ "mcpDefaults": Value::Object(all) }]);
-                                        match api::rpc("config:update", patch).await {
-                                            Ok(_) => status.set("saved".into()),
-                                            Err(e) => status.set(e),
-                                        }
-                                        load();
-                                    });
-                                }/>
-                                <b>{e["label"].as_str().unwrap_or("").to_string()}</b>
-                            </label>
-                            <span class=move || if tier == "safe-readonly" { "tag" } else { "tag warn" }>
-                                {e["tier"].as_str().unwrap_or("").to_string()}
-                            </span>
-                            <span class="dim">{e["description"].as_str().unwrap_or("").to_string()}</span>
-                        </div>
+        <div class="cfg-cols">
+            <section>
+                <h3>"Add a tool"</h3>
+                <p class="hint">
+                    "A tool is an MCP server: a command this floor runs and hands to your
+                     agents."
+                </p>
+                <label>"name"</label>
+                <input prop:value=move || nid.get() placeholder="my-tool"
+                       on:input=move |e| nid.set(event_target_value(&e))/>
+                <label>"shown as"</label>
+                <input prop:value=move || nlabel.get() placeholder="My Tool"
+                       on:input=move |e| nlabel.set(event_target_value(&e))/>
+                <label>"command"</label>
+                <input prop:value=move || ncmd.get() placeholder="npx"
+                       on:input=move |e| ncmd.set(event_target_value(&e))/>
+                <label>"arguments"</label>
+                <input prop:value=move || nargs.get() placeholder="-y @scope/server"
+                       on:input=move |e| nargs.set(event_target_value(&e))/>
+                <label class="check">
+                    <input type="checkbox" prop:checked=move || nsafe.get()
+                           on:change=move |e| nsafe.set(event_target_checked(&e))/>
+                    "read-only — no writes outside the workspace, no credentials"
+                </label>
+                <button on:click=register>"add"</button>
+                <p class="hint">
+                    "Ticking read-only turns it on straight away. Leave it clear and the
+                     tool is added switched off, waiting for you — which is what anything
+                     that writes beyond the workspace or holds a credential should be."
+                </p>
+            </section>
+
+            <section>
+                <h3>"Tools"</h3>
+                <p class="hint">
+                    "Read-only servers are on by default. Anything that writes outside the
+                     workspace or needs a credential stays off until you turn it on here —
+                     a default can never arm one, and neither can an agent."
+                </p>
+                <For each=move || list.get() key=|e| e["id"].as_str().unwrap_or("").to_string() let:e>
+                    {
+                        let id = e["id"].as_str().unwrap_or("").to_string();
+                        let (i1, i2) = (id.clone(), id.clone());
+                        let on = e["enabled"].as_bool().unwrap_or(false);
+                        let tier = e["tier"].as_str().unwrap_or("").to_string();
+                        let builtin = e["builtin"].as_bool().unwrap_or(false);
+                        let asked_by = e["proposedBy"].as_str().map(String::from);
+                        let run = {
+                            let args = e["args"].as_array().map(|a| a.iter()
+                                .filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" "))
+                                .unwrap_or_default();
+                            let cmd = e["command"].as_str().unwrap_or("");
+                            if args.is_empty() { cmd.to_string() } else { format!("{cmd} {args}") }
+                        };
+                        view! {
+                            <div class="row tool">
+                                <label class="check">
+                                    <input type="checkbox" prop:checked=on on:change=move |ev| {
+                                        set_fields(i1.clone(),
+                                            vec![("enabled", json!(event_target_checked(&ev)))]);
+                                    }/>
+                                    <b>{e["label"].as_str().unwrap_or(&id).to_string()}</b>
+                                </label>
+                                <span class=move || if tier == "safe-readonly" { "tag" } else { "tag warn" }>
+                                    {e["tier"].as_str().unwrap_or("").to_string()}
+                                </span>
+                                // Whose idea this was. An operator arming it
+                                // should know they are approving a request
+                                // rather than revisiting their own decision.
+                                <Show when={let a = asked_by.clone(); move || a.is_some()}>
+                                    <span class="tag warn">
+                                        {format!("asked for by {}", asked_by.clone().unwrap_or_default())}
+                                    </span>
+                                </Show>
+                                <span class="dim">{e["description"].as_str().unwrap_or("").to_string()}</span>
+                                <span class="grow"></span>
+                                <span class="dim">{run}</span>
+                                <Show when=move || !builtin>
+                                    <button class="ghost danger" on:click={
+                                        let i2 = i2.clone();
+                                        move |_| forget(i2.clone())
+                                    }>"remove"</button>
+                                </Show>
+                            </div>
+                        }
                     }
-                }
-            </For>
-        </section>
+                </For>
+            </section>
+        </div>
     }
 }
 

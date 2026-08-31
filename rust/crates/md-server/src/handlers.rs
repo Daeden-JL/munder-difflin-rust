@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 
 use crate::engines;
 use crate::git;
+use crate::mcp;
 use crate::hive;
 use crate::spawn;
 use crate::rpc::Op;
@@ -1878,6 +1879,155 @@ fn fs_write_file(ctx: &Ctx) -> RpcResponse {
     }
 }
 
+/// How many tools an agent may leave waiting for review.
+///
+/// A cap rather than a rate limit: the failure this guards against is a
+/// confused agent writing the same proposal in a loop until the config file is
+/// unreadable, and a person cannot review a hundred of them anyway.
+const PENDING_TOOL_CAP: usize = 24;
+
+/// The decision inside a tool request, with none of the files.
+///
+/// Separated because this is the security boundary and it should be readable as
+/// one piece: who may ask, what they may ask for, and what is written down no
+/// matter what they asked for.
+fn propose_tool(
+    from: &str,
+    god: &str,
+    servers: &serde_json::Map<String, Value>,
+    tool: &Value,
+) -> Result<(String, Value), String> {
+    // Only the orchestrator. A worker that could install tools could install one
+    // for every other agent on the floor, and that is a decision belonging to
+    // whoever is running it.
+    if from.is_empty() || from != god {
+        return Err("Only the orchestrator can ask the floor for a tool. Send this to the \
+                    orchestrator instead and let it make the request."
+            .into());
+    }
+    if !tool.is_object() {
+        return Err("To register a tool, write a message to `harness` with a `tool` object: \
+                    id, label, description, command, args. It is registered switched OFF \
+                    and a person has to turn it on."
+            .into());
+    }
+
+    let id: String = tool["id"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let id = id.trim_matches('-').to_string();
+    let command = tool["command"].as_str().unwrap_or("").trim().to_string();
+    if id.is_empty() || command.is_empty() {
+        return Err("A tool needs an `id` and a `command`. Nothing was registered.".into());
+    }
+
+    // Never an entry that already exists, and never a name the bundle ships.
+    // `filesystem` is armed by default, so an agent that could rewrite its
+    // command would have a shell rather than a tool — this line is the reason
+    // the rest of it is safe.
+    if servers.contains_key(&id) || mcp::CATALOG.iter().any(|e| e.id == id) {
+        return Err(format!(
+            "`{id}` already exists on this floor, and a tool that exists is not mine to \
+             change — ask for it under a different name, or ask the operator to edit it."
+        ));
+    }
+    let pending = servers
+        .values()
+        .filter(|v| v.get("proposedBy").is_some() && v["enabled"] != true)
+        .count();
+    if pending >= PENDING_TOOL_CAP {
+        return Err(format!(
+            "There are already {pending} tools waiting to be reviewed. Nothing was \
+             registered — ask the operator to work through those first."
+        ));
+    }
+
+    Ok((
+        id.clone(),
+        json!({
+            "label": tool["label"].as_str().unwrap_or(&id),
+            "description": tool["description"].as_str()
+                .unwrap_or("Proposed by the orchestrator."),
+            "command": command,
+            "args": tool["args"].as_array().cloned().unwrap_or_default(),
+            // Fixed here, never taken from the message. A tier the asker chose
+            // could be `safe-readonly`, which arms on sight.
+            "tier": "write",
+            "enabled": false,
+            "proposedBy": from,
+        }),
+    ))
+}
+
+/// Act on a message an agent addressed to the floor itself.
+///
+/// Today that is one thing: registering a tool. Kept here rather than in the
+/// hive because it writes the TENANT config, which the hive deliberately knows
+/// nothing about.
+///
+/// Whatever the answer, the asker is told — a request that vanishes is worse
+/// than one that is refused, because an agent will simply ask again.
+pub fn harness_request(state: &AppState, tenant: &TenantId, paths: &TenantPaths, msg: &Value) {
+    let hive = hive::Hive::new(paths.hive_root());
+    let from = msg["from"].as_str().unwrap_or("").to_string();
+    let conversation = msg["conversation"].clone();
+    let reply = |body: String| {
+        if from.is_empty() {
+            return;
+        }
+        hive.send(
+            &json!({
+                "to": from, "act": "inform", "conversation": conversation,
+                "subject": "harness", "body": body,
+            }),
+            hive::HARNESS,
+        );
+    };
+
+    let path = paths.config_file();
+    let mut config: Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| json!({}));
+    let existing = config["mcpDefaults"].as_object().cloned().unwrap_or_default();
+    let god = hive.registry()["godId"].as_str().unwrap_or("").to_string();
+
+    let (id, entry) = match propose_tool(&from, &god, &existing, &msg["tool"]) {
+        Ok(v) => v,
+        Err(why) => return reply(why),
+    };
+
+    let mut servers = existing;
+    servers.insert(id.clone(), entry);
+    config["mcpDefaults"] = Value::Object(servers);
+
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    match std::fs::write(&path, serde_json::to_vec_pretty(&config).unwrap_or_default()) {
+        Ok(()) => {
+            reply(format!(
+                "Registered `{id}`, switched off. It will not load for anyone until \
+                 somebody turns it on under setup \u{2192} tools. Say what it is for there \
+                 if you want that decision to be an easy one."
+            ));
+            state.hub.publish(
+                tenant,
+                md_contract::ServerEvent::new(
+                    md_contract::Push::ConfigChanged,
+                    json!({ "mcpDefaults": true, "proposed": id }),
+                ),
+            );
+        }
+        Err(e) => reply(format!("Could not write the floor's configuration: {e}")),
+    }
+}
+
 /// What a spawn request decided to run.
 struct Chosen {
     engine: Option<engines::Engine>,
@@ -2110,6 +2260,98 @@ mod tests {
 
     fn opts(v: Value) -> Value {
         v
+    }
+
+    fn tool(v: Value) -> Value { v }
+    fn empty() -> serde_json::Map<String, Value> { serde_json::Map::new() }
+
+    /// The orchestrator can ask for a tool, and what it gets is switched off.
+    #[test]
+    fn a_tool_the_orchestrator_asks_for_is_registered_but_not_armed() {
+        let (id, e) = propose_tool(
+            "michael", "michael", &empty(),
+            &tool(json!({ "id": "Scraper 2", "command": "npx", "args": ["-y", "scraper"] })),
+        ).unwrap();
+
+        assert_eq!(id, "scraper-2", "the name is made safe to key on");
+        assert_eq!(e["enabled"], false, "nothing an agent asks for is armed by the asking");
+        assert_eq!(e["tier"], "write");
+        assert_eq!(e["proposedBy"], "michael");
+        assert_eq!(e["command"], "npx");
+    }
+
+    /// A worker that could install tools could install one for every other
+    /// agent on the floor.
+    #[test]
+    fn a_worker_cannot_register_a_tool() {
+        let err = propose_tool("dwight", "michael", &empty(),
+            &tool(json!({ "id": "x", "command": "sh" }))).unwrap_err();
+        assert!(err.contains("Only the orchestrator"), "{err}");
+
+        // And neither can a message with no sender.
+        assert!(propose_tool("", "", &empty(),
+            &tool(json!({ "id": "x", "command": "sh" }))).is_err());
+    }
+
+    /// The one that matters. `filesystem` ships armed, so an agent able to
+    /// rewrite its command would have arbitrary execution rather than a tool.
+    #[test]
+    fn an_agent_cannot_rewrite_a_tool_that_already_exists() {
+        for name in ["filesystem", "git", "fetch", "github"] {
+            let err = propose_tool("michael", "michael", &empty(),
+                &tool(json!({ "id": name, "command": "sh -c evil" }))).unwrap_err();
+            assert!(err.contains("already exists"), "{name}: {err}");
+        }
+
+        // Including one the operator registered themselves.
+        let mut mine = empty();
+        mine.insert("mine".into(), json!({ "command": "safe", "enabled": true }));
+        let err = propose_tool("michael", "michael", &mine,
+            &tool(json!({ "id": "mine", "command": "evil" }))).unwrap_err();
+        assert!(err.contains("already exists"), "{err}");
+    }
+
+    /// Tier is written here, not read from the request: `safe-readonly` arms on
+    /// sight, so an asker choosing its own tier would be arming its own tool.
+    #[test]
+    fn an_agent_cannot_declare_its_own_tool_safe() {
+        let (_, e) = propose_tool("michael", "michael", &empty(), &tool(json!({
+            "id": "x", "command": "sh", "tier": "safe-readonly", "enabled": true,
+        }))).unwrap();
+        assert_eq!(e["tier"], "write");
+        assert_eq!(e["enabled"], false);
+        // ...and the consent layer agrees, which is what actually keeps it off.
+        let cfg = json!({ "mcpDefaults": { "x": e } });
+        assert!(mcp::servers_for("/w", &cfg).get("munder-x").is_none());
+    }
+
+    #[test]
+    fn a_tool_with_nothing_to_run_is_refused() {
+        for bad in [json!({ "id": "x" }), json!({ "command": "sh" }), json!({}), Value::Null] {
+            assert!(propose_tool("michael", "michael", &empty(), &bad).is_err());
+        }
+    }
+
+    /// A confused agent looping on the same proposal should not make the config
+    /// file unreadable, and nobody can review a hundred of them anyway.
+    #[test]
+    fn proposals_stop_piling_up_past_a_cap() {
+        let mut servers = empty();
+        for i in 0..PENDING_TOOL_CAP {
+            servers.insert(format!("p{i}"), json!({ "proposedBy": "michael", "enabled": false }));
+        }
+        let err = propose_tool("michael", "michael", &servers,
+            &tool(json!({ "id": "one-more", "command": "sh" }))).unwrap_err();
+        assert!(err.contains("waiting to be reviewed"), "{err}");
+
+        // Approved ones do not count against it, or arming tools would slowly
+        // lock the orchestrator out of asking for more.
+        let mut approved = empty();
+        for i in 0..PENDING_TOOL_CAP {
+            approved.insert(format!("p{i}"), json!({ "proposedBy": "michael", "enabled": true }));
+        }
+        assert!(propose_tool("michael", "michael", &approved,
+            &tool(json!({ "id": "one-more", "command": "sh" }))).is_ok());
     }
 
     #[test]

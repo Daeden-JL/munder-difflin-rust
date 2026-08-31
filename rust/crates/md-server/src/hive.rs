@@ -28,6 +28,14 @@ use serde_json::{json, Map, Value};
 /// Electron cap; there is no human queue to fall back on.
 const HOP_CAP: u64 = 12;
 
+/// The reserved recipient meaning "the floor itself".
+///
+/// Alongside `broadcast`, `god` and `human`, which are already not agent ids.
+/// An agent addressing this is asking for something to be CHANGED rather than
+/// read, which is why the request is answered by the caller and always lands
+/// somewhere a person has to look at it.
+pub const HARNESS: &str = "harness";
+
 /// Providers with no inbox-drain path. Mail to one of these cannot be delivered
 /// into `inbox/` — the Electron original hands it to a terminal work-order
 /// instead, and bounces to the god when that fails. With no handoff channel
@@ -642,6 +650,16 @@ impl Hive {
                 .unwrap_or("claude")
                 .to_string()
         };
+
+        // `harness` is the floor itself, not somebody on it: a request to change
+        // how the floor is configured rather than mail to be delivered. It goes
+        // to nobody here — the router's CALLER acts on it, because the hive
+        // knows only its own files and has no business learning where the
+        // tenant config lives.
+        if to == HARNESS {
+            self.append_log(json!({ "kind": "harness-request", "from": from, "id": id }));
+            return vec![];
+        }
 
         let targets: Vec<String> = if to == "broadcast" {
             // Fan-out is the ACTIVE registry: never the sender, never the
@@ -1271,6 +1289,23 @@ mod tests {
 
     fn put_outbox(h: &Hive, owner: &str, name: &str, body: &str) {
         std::fs::write(h.agent_dir(owner).join("outbox").join(name), body).unwrap();
+    }
+
+    /// A request to the floor is not mail: it must reach nobody's inbox, and it
+    /// must still come back out of the router so its caller can act on it.
+    #[test]
+    fn a_request_to_the_harness_is_not_delivered_to_anyone() {
+        let h = with_agents(&["michael", "dwight"]);
+        put_outbox(&h, "michael", "a.json",
+            r#"{"to":"harness","act":"propose","subject":"a tool"}"#);
+
+        let routed = h.route_once();
+        assert_eq!(routed.len(), 1, "the caller still sees it");
+        assert_eq!(routed[0].message["to"], "harness");
+        assert!(routed[0].delivered.is_empty(), "nobody was sent it");
+        // And in particular it did not land on the orchestrator as ordinary
+        // mail, which is what an unknown recipient would have done.
+        assert_eq!(h.inbox("dwight").as_array().map(|a| a.len()), Some(0));
     }
 
     #[test]

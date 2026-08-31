@@ -32,6 +32,37 @@ md-pty        portable-pty session manager and byte streaming
 md-server     axum: /rpc/{channel}, /ws, auth, dispatch
 ```
 
+## Engines and tools
+
+**Engines** are the agent CLIs a floor can hire — a name, a command, its
+arguments, and whether the CLI speaks Claude Code's hook and settings protocol.
+Fourteen ship (`crates/md-server/src/engines.rs`); a tenant registers its own or
+overrides any field of a built-in under `engines` in its config, from
+setup → engines. Only Claude Code is marked hooked, because the original's
+translating shims for the others are not ported and an engine that claims hooks
+it lacks looks live on the floor and reports nothing.
+
+**Tools** are MCP servers (`crates/md-server/src/mcp.rs`), registered the same
+way under `mcpDefaults`. The consent tiers are load-bearing: `safe-readonly`
+ships on, everything else needs an explicit `enabled: true`, and a registration
+the bundle has not vetted is treated as `write` unless it says otherwise.
+
+The orchestrator can register one too, by writing a message to the reserved
+recipient `harness`:
+
+```json
+{ "to": "harness", "act": "propose",
+  "tool": { "id": "scraper", "label": "Scraper",
+            "command": "npx", "args": ["-y", "some-server"] } }
+```
+
+What it registers is **always off**, always `write`, and always tagged with who
+asked. It may not name a tool that already exists, because `filesystem` ships
+armed and an agent that could rewrite its command would have a shell rather than
+a tool. Only the orchestrator may ask, and it is told the answer will need a
+person. See `handlers::propose_tool` — the whole decision is one function so it
+can be read in one go.
+
 ## Port progress
 
 `/api/health` reports ported vs total channels. For the remaining list:
