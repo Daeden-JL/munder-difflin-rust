@@ -25,6 +25,7 @@ use leptos::prelude::*;
 use wasm_bindgen::{Clamped, JsCast};
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData};
 
+use crate::nav::{self, Nav};
 use crate::pixel;
 use crate::theme::{self, Theme};
 
@@ -98,6 +99,12 @@ struct Walker {
     /// Walking in for the first time. A newly hired agent arrives through a
     /// door instead of materialising at its desk.
     entering: bool,
+    /// The rest of the way there, in sprite space, next stop LAST — so taking
+    /// the next leg is a pop rather than a shift of the whole route.
+    ///
+    /// Empty is the normal state: most walks are within one room, and a
+    /// straight line is the whole route.
+    path: Vec<[f64; 2]>,
 }
 
 impl Walker {
@@ -109,7 +116,7 @@ impl Walker {
         Self {
             x, y, tx: x, ty: y, at: None, facing_back: false, step: 0, step_t: 0.0,
             linger: 0.0, roam, seed, saying: None, say_t: 0.0, restless,
-            home: None, haunt: None, entering: false,
+            home: None, haunt: None, entering: false, path: Vec::new(),
         }
     }
 
@@ -124,6 +131,32 @@ impl Walker {
         (self.tx - self.x).abs() < 1.0 && (self.ty - self.y).abs() < 1.0
     }
 
+    /// Head somewhere, going round the walls rather than through them.
+    ///
+    /// Every destination goes through here — a station, a post, a wander, a
+    /// doorway — so there is no second path that skips the routing.
+    fn go(&mut self, nav: &Nav, target: [f64; 2]) {
+        self.path.clear();
+        if nav.is_empty() {
+            [self.tx, self.ty] = target;
+            return;
+        }
+        let mut legs: Vec<[f64; 2]> = nav
+            .route(nav::to_feet([self.x, self.y]), nav::to_feet(target))
+            .into_iter()
+            .map(nav::to_sprite)
+            .collect();
+        // Reversed, so the next leg is the last element.
+        legs.reverse();
+        match legs.pop() {
+            Some(next) => {
+                [self.tx, self.ty] = next;
+                self.path = legs;
+            }
+            None => [self.tx, self.ty] = target,
+        }
+    }
+
     /// Say something, unless already mid-sentence — interrupting a line the
     /// reader has not finished is worse than staying quiet.
     fn say(&mut self, lines: &[String]) {
@@ -135,7 +168,7 @@ impl Walker {
         self.say_t = SAY_SECS;
     }
 
-    fn advance(&mut self, dt: f64, p: &theme::Personality) {
+    fn advance(&mut self, dt: f64, p: &theme::Personality, nav: &Nav) {
         if self.saying.is_some() {
             self.say_t -= dt;
             if self.say_t <= 0.0 {
@@ -161,6 +194,13 @@ impl Walker {
             return;
         }
 
+        // A leg of a route finished. Take the next one without stopping, or the
+        // walk reads as a series of pauses at every doorway.
+        if let Some(next) = self.path.pop() {
+            [self.tx, self.ty] = next;
+            return;
+        }
+
         // Arrived. Stand still, then wander — unless posted to a station, where
         // the agent stays until its work sends it somewhere else.
         self.step = 0;
@@ -172,9 +212,8 @@ impl Walker {
         // introduction.
         if self.entering {
             self.entering = false;
-            if let Some([hx, hy]) = self.home {
-                self.tx = hx;
-                self.ty = hy;
+            if let Some(home) = self.home {
+                self.go(nav, home);
                 return;
             }
         }
@@ -191,20 +230,19 @@ impl Walker {
             let wander = self.rand() < 0.25 + self.restless.clamp(0.0, 1.0) * 0.5;
             // A little scatter around a post, so two visits do not land on the
             // identical pixel.
-            let settle = |w: &mut Self, [hx, hy]: [f64; 2]| {
-                w.tx = hx + (w.rand() - 0.5) * 6.0;
-                w.ty = hy + (w.rand() - 0.5) * 4.0;
+            let scatter = |w: &mut Self, [hx, hy]: [f64; 2]| {
+                [hx + (w.rand() - 0.5) * 6.0, hy + (w.rand() - 0.5) * 4.0]
             };
             let second = self.haunt.filter(|_| self.rand() < 0.6);
-            match (self.home, wander, second) {
-                (Some(h), false, _) => settle(self, h),
-                (_, true, Some(h)) => settle(self, h),
+            let target = match (self.home, wander, second) {
+                (Some(h), false, _) => scatter(self, h),
+                (_, true, Some(h)) => scatter(self, h),
                 _ => {
                     let [x0, y0, x1, y1] = self.roam;
-                    self.tx = x0 + self.rand() * (x1 - x0);
-                    self.ty = y0 + self.rand() * (y1 - y0);
+                    [x0 + self.rand() * (x1 - x0), y0 + self.rand() * (y1 - y0)]
                 }
-            }
+            };
+            self.go(nav, target);
             // Muttering on settling, not on a timer: the line reads as a thought
             // rather than a ticker.
             if self.rand() < 0.45 {
@@ -213,14 +251,16 @@ impl Walker {
         }
     }
 
-    fn send_to(&mut self, s: &theme::Station) {
+    fn send_to(&mut self, s: &theme::Station, nav: &Nav) {
         self.at = Some(s.kind.clone());
         // Stand just clear of the station's bottom edge, so the figure does not
         // cover the label. Off the station's own height rather than a constant:
         // a console drawn flat on a deck plan is a tenth the depth of one drawn
         // side-on, and a fixed offset put the figure in the next room along.
-        self.tx = s.x + s.w / 2.0 - pixel::SCENE_W as f64 / 2.0;
-        self.ty = s.y + s.h - 2.0;
+        self.go(nav, [
+            s.x + s.w / 2.0 - pixel::SCENE_W as f64 / 2.0,
+            s.y + s.h - 2.0,
+        ]);
     }
 }
 
@@ -263,6 +303,25 @@ struct Frames {
 #[derive(Default)]
 struct Sprites {
     cache: HashMap<String, Rc<Frames>>,
+}
+
+/// The walk graph for each theme, built once.
+///
+/// Adjacency is fixed for a given layout, and a route is asked for every time
+/// anyone chooses somewhere to go — rebuilding it sixty times a second to
+/// answer a question asked every few seconds would be the wrong way round.
+#[derive(Default)]
+struct Navs {
+    cache: HashMap<String, Rc<Nav>>,
+}
+
+impl Navs {
+    fn get(&mut self, t: &Theme) -> Rc<Nav> {
+        self.cache
+            .entry(t.id.clone())
+            .or_insert_with(|| Rc::new(Nav::new(&t.layout.walk)))
+            .clone()
+    }
 }
 
 impl Sprites {
@@ -368,6 +427,7 @@ pub fn Floor(
 ) -> impl IntoView {
     let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
     let sprites = Rc::new(RefCell::new(Sprites::default()));
+    let navs = Rc::new(RefCell::new(Navs::default()));
     let walkers: Rc<RefCell<HashMap<String, Walker>>> = Rc::new(RefCell::new(HashMap::new()));
     let themes = Rc::new(theme::builtin());
     let names: Vec<String> = themes.iter().map(|t| t.name.clone()).collect();
@@ -376,7 +436,7 @@ pub fn Floor(
     // directly rather than through a signal, because the animation loop owns
     // position and two writers would fight.
     {
-        let walkers = walkers.clone();
+        let (walkers, navs) = (walkers.clone(), navs.clone());
         Effect::new(move |_| {
             let Some((id, tool)) = activity.get() else { return };
             let kind = station_for(&tool);
@@ -384,9 +444,10 @@ pub fn Floor(
             let Some(t) = themes.get(theme.get_untracked() % themes.len().max(1)) else { return };
             let Some(station) = t.layout.stations.iter().find(|s| s.kind == kind) else { return };
 
+            let nav = navs.borrow_mut().get(t);
             let mut ws = walkers.borrow_mut();
             let Some(w) = ws.get_mut(&id) else { return };
-            w.send_to(station);
+            w.send_to(station, &nav);
             // Say something on being given work, so the floor narrates itself.
             if let Some(arch) = archetypes.get_untracked().get(&id) {
                 if let Some(c) = t.character(arch) {
@@ -400,7 +461,8 @@ pub fn Floor(
     // floor: a timer per agent would drift apart and repaint the canvas
     // several times a frame.
     {
-        let (sprites, walkers, themes) = (sprites.clone(), walkers.clone(), themes.clone());
+        let (sprites, navs, walkers, themes) =
+            (sprites.clone(), navs.clone(), walkers.clone(), themes.clone());
         Effect::new(move |_| {
             let Some(canvas) = canvas_ref.get() else { return };
             let el: HtmlCanvasElement = canvas.unchecked_into();
@@ -410,7 +472,8 @@ pub fn Floor(
             let outer = raf.clone();
             let last = Rc::new(RefCell::new(0.0f64));
 
-            let (sprites, walkers, themes) = (sprites.clone(), walkers.clone(), themes.clone());
+            let (sprites, navs, walkers, themes) =
+                (sprites.clone(), navs.clone(), walkers.clone(), themes.clone());
             *outer.borrow_mut() = Some(wasm_bindgen::closure::Closure::new(move |now: f64| {
                 let dt = {
                     let mut l = last.borrow_mut();
@@ -423,6 +486,7 @@ pub fn Floor(
 
                 let list = occupants.get_untracked();
                 let t = &themes[theme.get_untracked() % themes.len().max(1)];
+                let nav = navs.borrow_mut().get(t);
 
                 // Reconcile walkers with the roster: new agents get a walker,
                 // departed ones lose theirs, so the map cannot grow forever.
@@ -439,6 +503,14 @@ pub fn Floor(
                             let (home, haunt) = posts(t, o);
                             walker.home = home;
                             walker.haunt = haunt;
+                            // Spread across the roam box, which knows nothing
+                            // about the rooms: without this someone can start
+                            // inside a bulkhead and route out of it forever.
+                            if !nav.is_empty() {
+                                [walker.x, walker.y] =
+                                    nav::to_sprite(nav.snap(nav::to_feet([walker.x, walker.y])));
+                                (walker.tx, walker.ty) = (walker.x, walker.y);
+                            }
                             // Arrive through a doorway rather than appearing at
                             // the desk: someone joining the floor should be seen
                             // to join it.
@@ -466,7 +538,7 @@ pub fn Floor(
                             let (home, haunt) = posts(t, o);
                             walker.home = home;
                             walker.haunt = haunt;
-                            walker.advance(dt, &p);
+                            walker.advance(dt, &p, &nav);
                         }
                     }
 
@@ -546,10 +618,13 @@ pub fn Floor(
             <div class="floor-bar">
                 <span class="dim">"theme"</span>
                 <select on:change=move |e| {
-                    theme.set(event_target_value(&e).parse().unwrap_or(0));
+                    theme::select(theme, event_target_value(&e).parse().unwrap_or(0));
                 }>
+                    // `selected` bound to the signal, or the dropdown reads
+                    // "Office" while the floor plainly shows a starship — which
+                    // looks exactly like the theme having reset.
                     {names.into_iter().enumerate().map(|(i, n)| view! {
-                        <option value=i.to_string()>{n}</option>
+                        <option value=i.to_string() selected=move || theme.get() == i>{n}</option>
                     }).collect::<Vec<_>>()}
                 </select>
             </div>
@@ -750,4 +825,70 @@ fn draw(
 
     ctx.restore();
     let _ = el;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The whole point of the navigation: simulate a character living on the
+    /// ship for several minutes and assert its feet are never off the deck.
+    ///
+    /// This is the bug it exists for. Before it, a walk was a straight line to
+    /// the destination and the crew went through the bulkheads — which looks
+    /// fine on an open office floor and absurd on a deck plan.
+    #[test]
+    fn a_character_living_on_the_ship_never_walks_through_a_wall() {
+        let themes = theme::builtin();
+        let t = themes.iter().find(|t| t.id == "serenity").unwrap();
+        let nav = Nav::new(&t.layout.walk);
+
+        // Several characters, because where you start and how restless you are
+        // decide which routes you ever take.
+        for slot in theme::ARCHETYPES {
+            let p = t.character(slot).unwrap().personality.clone();
+            let seed = slot.bytes().fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
+            let mut w = Walker::new(0, seed, t.layout.roam, p.restless);
+            w.home = t.post(slot, false);
+            w.haunt = t.post(slot, true);
+            // Enter the way a new hire does.
+            let d = &t.layout.doors[0];
+            (w.x, w.y) = (d.threshold[0], d.threshold[1]);
+            (w.tx, w.ty) = (w.x, w.y);
+            w.entering = true;
+
+            // Sent to every station along the way, so the tool-driven walks are
+            // exercised too and not only the idle wandering.
+            for i in 0..18_000 {
+                w.advance(1.0 / 60.0, &p, &nav);
+                if i % 1_500 == 1_499 {
+                    let st = &t.layout.stations[(i / 1_500) as usize % t.layout.stations.len()];
+                    w.send_to(st, &nav);
+                    w.at = None; // released, so it goes back to wandering
+                }
+                let feet = nav::to_feet([w.x, w.y]);
+                let deck = nav.snap(feet);
+                assert!(
+                    (deck[0] - feet[0]).abs() < 0.5 && (deck[1] - feet[1]).abs() < 0.5,
+                    "{slot} at frame {i}: feet {feet:?} are off the deck, \
+                     nearest walkable is {deck:?}",
+                );
+            }
+        }
+    }
+
+    /// A theme that declares no walkable space keeps the old behaviour exactly:
+    /// one open floor, straight lines, no routing.
+    #[test]
+    fn an_open_floor_still_walks_straight_there() {
+        let themes = theme::builtin();
+        let office = themes.iter().find(|t| t.id == "office").unwrap();
+        assert!(office.layout.walk.is_empty());
+
+        let nav = Nav::new(&office.layout.walk);
+        let mut w = Walker::new(0, 3, office.layout.roam, 0.5);
+        w.go(&nav, [200.0, 100.0]);
+        assert_eq!((w.tx, w.ty), (200.0, 100.0));
+        assert!(w.path.is_empty(), "an open floor needs no waypoints");
+    }
 }

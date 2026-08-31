@@ -513,7 +513,9 @@ fn Preferences(status: RwSignal<String>, theme_idx: RwSignal<usize>) -> impl Int
             <section>
                 <h3>"Appearance"</h3>
                 <label>"theme"</label>
-                <select on:change=move |e| theme_idx.set(event_target_value(&e).parse().unwrap_or(0))>
+                <select on:change=move |e| {
+                    theme::select(theme_idx, event_target_value(&e).parse().unwrap_or(0))
+                }>
                     {names.into_iter().enumerate().map(|(i, n)| view! {
                         <option value=i.to_string() selected=move || theme_idx.get() == i>{n}</option>
                     }).collect::<Vec<_>>()}

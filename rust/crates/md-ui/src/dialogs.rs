@@ -147,12 +147,8 @@ pub fn ClosingTime(open: RwSignal<bool>) -> impl IntoView {
 #[component]
 pub fn ThemePicker(open: RwSignal<bool>, theme_idx: RwSignal<usize>) -> impl IntoView {
     let choose = move |i: usize| {
-        theme_idx.set(i);
+        theme::select(theme_idx, i);
         open.set(false);
-        leptos::task::spawn_local(async move {
-            let id = theme::builtin().get(i).map(|t| t.id.clone()).unwrap_or_default();
-            let _ = api::rpc("config:update", json!([{ "theme": id, "themeChosen": true }])).await;
-        });
     };
 
     view! {

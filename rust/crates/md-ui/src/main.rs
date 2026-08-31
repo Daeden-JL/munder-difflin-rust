@@ -11,6 +11,7 @@ mod dialogs;
 mod editor;
 mod floor;
 mod markdown;
+mod nav;
 mod pixel;
 mod theme;
 mod transcript;

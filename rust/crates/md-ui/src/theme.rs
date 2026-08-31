@@ -22,6 +22,7 @@
 
 use std::collections::HashMap;
 
+use leptos::prelude::*;
 use serde::Deserialize;
 
 use crate::pixel::Recipe;
@@ -213,6 +214,16 @@ pub struct Layout {
     pub grid: Option<String>,
     #[serde(default = "grid_step")]
     pub grid_step: f64,
+    /// The rectangles a character can stand in, as `[x0, y0, x1, y1]` in FEET
+    /// space — where they stand, not where their sprite's top-left corner is.
+    ///
+    /// Two that overlap are joined, and the overlap is the doorway. Empty means
+    /// the whole room is one open floor, which is true of a room drawn side-on
+    /// and is why the four of those carry none: a straight line across an
+    /// office is a walk somebody could take. A deck plan is rooms and
+    /// corridors, and a straight line across one crosses bulkheads.
+    #[serde(default)]
+    pub walk: Vec<[f64; 4]>,
     /// Where agents wander when they are not at a desk: `[x0, y0, x1, y1]`.
     pub roam: [f64; 4],
 }
@@ -379,6 +390,33 @@ pub fn assign_in(
     out
 }
 
+
+/// Choose a theme, and remember the choice.
+///
+/// Stored on the tenant rather than in the browser, so signing in from another
+/// machine shows the same room.
+///
+/// **Every place that changes the theme goes through here.** Only the first-run
+/// picker used to write the choice down; the floor's own dropdown and the one
+/// in setup moved the signal and nothing else, so changing the theme and
+/// reloading put you silently back on whichever theme the picker had recorded.
+pub fn select(theme: RwSignal<usize>, i: usize) {
+    theme.set(i);
+    leptos::task::spawn_local(async move {
+        let id = builtin().get(i).map(|t| t.id.clone()).unwrap_or_default();
+        if id.is_empty() {
+            return;
+        }
+        // `themeChosen` too: picking one from a dropdown is every bit as much a
+        // choice as picking one from the first-run dialog, and leaving it unset
+        // would ask again on the next visit.
+        let _ = crate::api::rpc(
+            "config:update",
+            serde_json::json!([{ "theme": id, "themeChosen": true }]),
+        )
+        .await;
+    });
+}
 
 /// The built-in Office theme, as data.
 ///
@@ -643,6 +681,75 @@ mod tests {
         let office = themes.iter().find(|t| t.id == "office").unwrap();
         assert!(office.poi("engine-room").is_none());
         assert!(office.post("engineer", false).is_some());
+    }
+
+    /// A map with walls has to be a map you can walk. Every place anyone is
+    /// ever sent must be on walkable ground and reachable from everywhere else
+    /// — an unreachable room is a figure that stands still forever, which is
+    /// much harder to spot than one taking a shortcut.
+    #[test]
+    fn every_place_on_a_walled_map_is_walkable_and_reachable() {
+        use crate::nav::{to_feet, Nav};
+
+        for t in builtin() {
+            if t.layout.walk.is_empty() {
+                // A room drawn side-on is one open floor, and needs none of
+                // this: a straight line across an office is a walk.
+                continue;
+            }
+            let nav = Nav::new(&t.layout.walk);
+
+            // Every destination the floor can choose, in the sprite coordinates
+            // it chooses them in.
+            let mut spots: Vec<(String, [f64; 2])> = Vec::new();
+            for p in &t.layout.pois {
+                spots.push((format!("post {}", p.id), [p.x, p.y]));
+            }
+            for st in &t.layout.stations {
+                spots.push((
+                    format!("station {}", st.label),
+                    [st.x + st.w / 2.0 - crate::pixel::SCENE_W as f64 / 2.0, st.y + st.h - 2.0],
+                ));
+            }
+            for d in &t.layout.doors {
+                spots.push((format!("doorway {}", d.label), d.threshold));
+            }
+
+            for (what, at) in &spots {
+                let feet = to_feet(*at);
+                assert_eq!(
+                    nav.snap(feet), feet,
+                    "{}: {what} is not on walkable ground", t.id,
+                );
+            }
+
+            // And you can get from any one of them to any other. Checked
+            // against the first rather than every pair: reachability is
+            // symmetric and transitive here, so one hub proves the graph is
+            // one piece. `connected` rather than `route`, which answers "walk
+            // there" and falls back to a straight line — asserting on the
+            // route's last point would pass for a room nothing reaches.
+            let (hub_name, hub) = &spots[0];
+            for (what, at) in &spots[1..] {
+                assert!(
+                    nav.connected(to_feet(*hub), to_feet(*at)),
+                    "{}: {what} is cut off from {hub_name}", t.id,
+                );
+            }
+        }
+    }
+
+    /// Serenity is the map this exists for, so it says so out loud: a deck plan
+    /// whose rooms were not declared walkable would silently fall back to
+    /// straight lines through the bulkheads.
+    #[test]
+    fn the_ship_declares_its_walkable_space() {
+        let themes = builtin();
+        let ser = themes.iter().find(|t| t.id == "serenity").unwrap();
+        assert!(
+            ser.layout.walk.len() >= 10,
+            "the ship has {} walkable boxes", ser.layout.walk.len()
+        );
     }
 
     #[test]

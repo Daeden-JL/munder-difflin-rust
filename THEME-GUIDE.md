@@ -151,6 +151,7 @@ Write short lines. They render in a speech bubble about 150 pixels wide.
   "poiLabels": true,        // paint those names onto the room
   "desks": { ... },         // each archetype's fallback place
   "doors": [ ... ],         // ways in and out
+  "walk": [ ... ],          // the rooms, and so the walls between them
   "roam": [48, 84, 268, 140]
 }
 ```
@@ -267,6 +268,45 @@ happen rather than a figure blinking into existence.
 Doors are also most of a room's identity. Serenity has two shuttles and the
 stairs to the catwalk; both Star Trek ships have a turbolift; the Office has
 reception and the break room; A New Hope has the bay doors and the ship's ramp.
+
+### Walk: where the floor actually is
+
+```jsonc
+"walk": [
+  [ 78,  74, 168,  88],   // the spine corridor
+  [ 82,  82, 118, 138],   // the infirmary, opening onto it
+  [124,  82, 160, 138]    // the galley, likewise
+]
+```
+
+Rectangles a character can **stand** in. Two that overlap are joined, and the
+overlap is the doorway — you connect two rooms by having their boxes share a few
+pixels. A walk is then a breadth-first route over those rooms, turning at the
+centre of each opening, and because a rectangle is convex and both ends of every
+leg are inside one, no leg can cross a wall. The guarantee is in the shape of the
+model, not in a collision check.
+
+Leave it out and the room is one open floor with straight-line movement, which is
+correct for a room drawn side-on: a straight line across an office is a walk
+somebody could take. The four side-on themes carry none. A **deck plan needs
+it** — without it the crew go through the bulkheads.
+
+Two things to get right:
+
+* These are in **feet space** — where the character stands, not where the
+  sprite's top-left corner is. A figure is 32 pixels tall and most rooms are
+  not, so its body is over the room behind it much of the time; its feet are the
+  only part that is really anywhere. A post at `[128, 100]` stands at
+  `[137, 130]`.
+* Make each overlap at least **six pixels** across. A walker counts itself
+  arrived within a pixel of its waypoint, and a doorway two pixels wide leaves
+  no room for that.
+
+A test walks a character around each themed map for several simulated minutes
+and fails if its feet ever leave the deck, and another fails if any post,
+console or doorway is cut off from the rest — an unreachable room is a figure
+standing still forever, which is far harder to notice than one taking a
+shortcut.
 
 ### Roam: where they wander
 
