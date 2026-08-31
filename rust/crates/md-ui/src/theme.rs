@@ -70,10 +70,43 @@ pub struct Personality {
     /// how long they linger before wandering.
     #[serde(default = "half")]
     pub restless: f64,
+    /// Where this character works, as a POI id, and where they are found when
+    /// they are not there.
+    ///
+    /// The theme's DEFAULT, not the agent's answer: an agent may be posted
+    /// anywhere on the map, and this is what it gets if nobody says otherwise.
+    /// A crew with workstations reads as a crew; one that drifts reads as a
+    /// crowd, and the difference is entirely this pair of strings.
+    #[serde(default)]
+    pub primary_poi: String,
+    #[serde(default)]
+    pub secondary_poi: String,
 }
 
 fn half() -> f64 {
     0.5
+}
+
+/// A named place on the map: somewhere a character can be posted.
+///
+/// Stations answer "where does this TOOL happen"; a POI answers "where does
+/// this PERSON belong". The two are deliberately separate — the engine room is
+/// Kaylee's post whether or not she is running a shell there, and a floor where
+/// the only destinations are tool stations empties out the moment nobody is
+/// working.
+///
+/// `x`/`y` is a standing spot: the top-left of the figure, in room pixels, the
+/// same coordinate space desks are authored in.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Poi {
+    /// Stable, lowercase, referenced by characters and by agents. Renaming one
+    /// orphans every reference, which is why it is not the label.
+    pub id: String,
+    /// What the map calls it.
+    pub label: String,
+    pub x: f64,
+    pub y: f64,
 }
 
 /// One place on the floor. Positions are in ROOM pixels, so a theme's layout is
@@ -89,6 +122,12 @@ pub struct Station {
     pub y: f64,
     #[serde(default = "default_w")]
     pub w: f64,
+    /// How tall the console is. A room seen side-on can afford a chunky slab;
+    /// a room seen from above cannot, because the slab would be most of the
+    /// room. The figure stands just clear of the bottom edge either way, so
+    /// changing this moves the console AND the person who works at it.
+    #[serde(default = "default_h")]
+    pub h: f64,
     /// Fill colour. Themes differ more in their furniture than their cast.
     #[serde(default)]
     pub color: Option<String>,
@@ -96,6 +135,10 @@ pub struct Station {
 
 fn default_w() -> f64 {
     30.0
+}
+
+fn default_h() -> f64 {
+    22.0
 }
 
 /// One piece of scenery.
@@ -118,6 +161,10 @@ pub struct Prop {
     /// Draw as an ellipse: rugs, hatches, the warp core.
     #[serde(default)]
     pub round: bool,
+    /// An outline. What turns a stack of rectangles into a deck plan: rooms on
+    /// a blueprint are read from their walls, not their fill.
+    #[serde(default)]
+    pub border: Option<String>,
 }
 
 /// The room a theme is set in.
@@ -150,8 +197,28 @@ pub struct Layout {
     /// walks in through one of these, and an archived one walks out.
     #[serde(default)]
     pub doors: Vec<Door>,
+    /// Every named place on this map.
+    ///
+    /// The map's legend AND its posting list: a theme that names its rooms lets
+    /// an operator say "Kaylee works in the engine room" instead of typing a
+    /// coordinate nobody can check.
+    #[serde(default)]
+    pub pois: Vec<Poi>,
+    /// Paint the POI names onto the room. True for a map read as a plan, false
+    /// for a room read as a room — an office does not label its own kitchen.
+    #[serde(default)]
+    pub poi_labels: bool,
+    /// A blueprint grid over the floor, and how far apart its lines are.
+    #[serde(default)]
+    pub grid: Option<String>,
+    #[serde(default = "grid_step")]
+    pub grid_step: f64,
     /// Where agents wander when they are not at a desk: `[x0, y0, x1, y1]`.
     pub roam: [f64; 4],
+}
+
+fn grid_step() -> f64 {
+    8.0
 }
 
 /// A way in or out of the room.
@@ -201,6 +268,30 @@ impl Theme {
     /// A theme that fills only some slots still dresses everyone: a missing
     /// `counsel` borrows from the first slot the theme does define, rather than
     /// leaving an invisible agent on the floor.
+    /// A named place, by id. `None` for an id this theme does not have — which
+    /// is the normal case after a theme switch, and why every caller falls back
+    /// rather than treating it as an error.
+    pub fn poi(&self, id: &str) -> Option<&Poi> {
+        self.layout.pois.iter().find(|p| p.id == id)
+    }
+
+    /// Where a character belongs on this map: their own post, then the
+    /// archetype's desk. Both are optional, so a sparse theme still places
+    /// everyone somewhere.
+    pub fn post(&self, archetype: &str, secondary: bool) -> Option<[f64; 2]> {
+        let c = self.character(archetype)?;
+        let id = if secondary {
+            &c.personality.secondary_poi
+        } else {
+            &c.personality.primary_poi
+        };
+        match self.poi(id) {
+            Some(p) => Some([p.x, p.y]),
+            None if secondary => None,
+            None => self.layout.desks.get(archetype).copied(),
+        }
+    }
+
     pub fn character(&self, archetype: &str) -> Option<&Character> {
         self.cast.get(archetype).or_else(|| {
             ARCHETYPES
@@ -225,16 +316,37 @@ impl Theme {
 ///
 /// `names` is `(id, display name)`. Matching is case-insensitive and on the
 /// first word, so "Pam Beesly" still finds Pam.
+///
+/// `pinned` is agent id → archetype, chosen when the agent was hired. It beats
+/// both rules: an operator who picked "Kaylee" from the personality list has
+/// said what they want, and a later hire whose name happens to collide must not
+/// take it away from them.
 pub fn assign_in(
     ids: &[String],
     god: Option<&str>,
     theme: Option<&Theme>,
+    pinned: &HashMap<String, String>,
 ) -> HashMap<String, String> {
     let mut out: HashMap<String, String> = HashMap::new();
     let mut taken: Vec<String> = Vec::new();
 
+    // Chosen slots first, and only once each: two agents pinned to the same
+    // archetype would otherwise share a face, so the second falls through to
+    // the ordinary rules.
+    for id in ids {
+        let Some(slot) = pinned.get(id) else { continue };
+        if !ARCHETYPES.contains(&slot.as_str()) || taken.contains(slot) {
+            continue;
+        }
+        out.insert(id.clone(), slot.clone());
+        taken.push(slot.clone());
+    }
+
     if let Some(t) = theme {
         for id in ids {
+            if out.contains_key(id) {
+                continue;
+            }
             // The agent id doubles as its name on this floor.
             let first = id.split(['-', '_', ' ']).next().unwrap_or(id).to_lowercase();
             if let Some((slot, _)) = t.cast.iter().find(|(slot, c)| {
@@ -304,8 +416,8 @@ mod tests {
     #[test]
     fn archetype_assignment_is_stable_across_a_theme_switch() {
         let ids: Vec<String> = ["michael", "dwight", "jim"].iter().map(|s| s.to_string()).collect();
-        let a = assign_in(&ids, Some("michael"), None);
-        let b = assign_in(&ids, Some("michael"), None);
+        let a = assign_in(&ids, Some("michael"), None, &HashMap::new());
+        let b = assign_in(&ids, Some("michael"), None, &HashMap::new());
         assert_eq!(a, b);
     }
 
@@ -319,7 +431,7 @@ mod tests {
         let ids: Vec<String> = ["michael", "dwight", "jim", "pam", "ryan"]
             .iter().map(|s| s.to_string()).collect();
 
-        let out = assign_in(&ids, Some("michael"), Some(office));
+        let out = assign_in(&ids, Some("michael"), Some(office), &HashMap::new());
         let who = |id: &str| office.character(&out[id]).unwrap().display.clone();
         assert_eq!(who("pam"), "Pam", "an agent named Pam must be Pam");
         assert_eq!(who("michael"), "Michael");
@@ -344,7 +456,7 @@ mod tests {
         let themes = builtin();
         let serenity = themes.iter().find(|t| t.id == "serenity").unwrap();
         let ids: Vec<String> = ["michael", "dwight", "jim"].iter().map(|s| s.to_string()).collect();
-        let out = assign_in(&ids, Some("michael"), Some(serenity));
+        let out = assign_in(&ids, Some("michael"), Some(serenity), &HashMap::new());
         assert_eq!(out["michael"], "leader");
         assert_eq!(serenity.character(&out["michael"]).unwrap().display, "Mal");
     }
@@ -355,14 +467,14 @@ mod tests {
     #[test]
     fn the_orchestrator_takes_the_leader_slot() {
         let ids: Vec<String> = ["michael", "dwight", "jim"].iter().map(|s| s.to_string()).collect();
-        let out = assign_in(&ids, Some("michael"), None);
+        let out = assign_in(&ids, Some("michael"), None, &HashMap::new());
         assert_eq!(out["michael"], "leader");
         // The rest keep stable id order behind it.
         assert_eq!(out["dwight"], "second");
         assert_eq!(out["jim"], "operator");
 
         // With no god named, plain id order.
-        let out = assign_in(&ids, None, None);
+        let out = assign_in(&ids, None, None, &HashMap::new());
         assert_eq!(out["dwight"], "leader");
     }
 
@@ -370,7 +482,7 @@ mod tests {
     #[test]
     fn more_agents_than_slots_wrap_rather_than_going_unassigned() {
         let ids: Vec<String> = (0..ARCHETYPES.len() + 3).map(|i| format!("a{i:02}")).collect();
-        let out = assign_in(&ids, None, None);
+        let out = assign_in(&ids, None, None, &HashMap::new());
         assert_eq!(out.len(), ids.len());
         assert!(out.values().all(|v| ARCHETYPES.contains(&v.as_str())));
         assert_eq!(out["a00"], out[&format!("a{:02}", ARCHETYPES.len())], "the roster wraps");
@@ -438,6 +550,99 @@ mod tests {
         let ser = themes.iter().find(|t| t.id == "serenity").unwrap();
         let labels: Vec<&str> = ser.layout.stations.iter().map(|s| s.label.as_str()).collect();
         assert!(labels.contains(&"ENGINE") && labels.contains(&"GALLEY"), "{labels:?}");
+    }
+
+    /// A chosen personality is a decision, and a later hire must not undo it.
+    /// Without the pin, hiring someone called `kaylee` would silently take the
+    /// engineer's face off the agent whose operator asked for it.
+    #[test]
+    fn a_pinned_archetype_beats_a_name_match_and_the_ordering() {
+        let themes = builtin();
+        let serenity = themes.iter().find(|t| t.id == "serenity").unwrap();
+        let ids: Vec<String> =
+            ["ada", "kaylee", "zed"].iter().map(|s| s.to_string()).collect();
+
+        let mut pins = HashMap::new();
+        pins.insert("ada".to_string(), "engineer".to_string());
+        let out = assign_in(&ids, None, Some(serenity), &pins);
+
+        assert_eq!(out["ada"], "engineer", "the pin wins");
+        assert_ne!(out["kaylee"], "engineer", "the name match yields to it");
+        let mut slots: Vec<&String> = out.values().collect();
+        let n = slots.len();
+        slots.sort();
+        slots.dedup();
+        assert_eq!(slots.len(), n, "two agents share an archetype");
+    }
+
+    /// A pin to a slot someone else already holds is dropped rather than
+    /// duplicated: two figures wearing one face is worse than a reassignment.
+    #[test]
+    fn two_agents_pinned_to_one_slot_do_not_share_a_face() {
+        let ids: Vec<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+        let mut pins = HashMap::new();
+        pins.insert("a".to_string(), "leader".to_string());
+        pins.insert("b".to_string(), "leader".to_string());
+        let out = assign_in(&ids, None, None, &pins);
+        assert_ne!(out["a"], out["b"]);
+    }
+
+    /// Every map names its places, and every reference to one resolves.
+    ///
+    /// A dangling POI id is invisible: the character silently falls back to a
+    /// desk and the theme looks merely badly laid out rather than broken.
+    #[test]
+    fn every_theme_names_its_places_and_every_reference_resolves() {
+        for t in builtin() {
+            assert!(t.layout.pois.len() >= 6, "{} names only {} places", t.id, t.layout.pois.len());
+
+            let mut ids: Vec<&str> = t.layout.pois.iter().map(|p| p.id.as_str()).collect();
+            let before = ids.len();
+            ids.sort();
+            ids.dedup();
+            assert_eq!(ids.len(), before, "{} has two places with one id", t.id);
+
+            let [x0, y0, x1, y1] = t.layout.roam;
+            for p in &t.layout.pois {
+                assert!(!p.label.is_empty(), "{}/{} has no label", t.id, p.id);
+                // A post outside the room is a character standing in the void.
+                assert!(
+                    p.x >= 0.0 && p.x <= 320.0 - crate::pixel::SCENE_W as f64
+                        && p.y >= t.layout.wall_depth
+                        && p.y <= 176.0 - crate::pixel::SCENE_H as f64,
+                    "{}/{} is off the map at ({}, {})", t.id, p.id, p.x, p.y
+                );
+                let _ = (x0, y0, x1, y1);
+            }
+
+            // Everyone has somewhere to be, and somewhere else to be found.
+            for a in ARCHETYPES {
+                let c = t.character(a).unwrap();
+                for (which, id) in [
+                    ("primary", &c.personality.primary_poi),
+                    ("secondary", &c.personality.secondary_poi),
+                ] {
+                    assert!(!id.is_empty(), "{}/{a} has no {which} post", t.id);
+                    assert!(t.poi(id).is_some(), "{}/{a} is posted to unknown {which} `{id}`", t.id);
+                }
+                assert_ne!(
+                    c.personality.primary_poi, c.personality.secondary_poi,
+                    "{}/{a} has one place, twice", t.id
+                );
+                assert!(t.post(a, false).is_some(), "{}/{a} has nowhere to work", t.id);
+            }
+        }
+    }
+
+    /// An agent carries its posts across a theme switch, and a Serenity POI id
+    /// means nothing on the Office floor. Falling back to the character's own
+    /// post is what keeps that from stranding anyone at (0, 0).
+    #[test]
+    fn a_post_from_another_theme_falls_back_to_the_character() {
+        let themes = builtin();
+        let office = themes.iter().find(|t| t.id == "office").unwrap();
+        assert!(office.poi("engine-room").is_none());
+        assert!(office.post("engineer", false).is_some());
     }
 
     #[test]

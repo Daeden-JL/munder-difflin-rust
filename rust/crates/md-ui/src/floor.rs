@@ -85,10 +85,16 @@ struct Walker {
     say_t: f64,
     /// How restless this character is, from its personality.
     restless: f64,
-    /// This character's own desk. Idling returns here rather than stopping
+    /// This character's own post. Idling returns here rather than stopping
     /// wherever the last wander ended — a floor where everyone drifts anywhere
     /// reads as a crowd, not a workplace.
     home: Option<[f64; 2]>,
+    /// Where they are found when they are not at their post.
+    ///
+    /// Without it, "not at your desk" means anywhere in the roam box, and a
+    /// crew with workstations still reads as a crowd the moment it moves. With
+    /// it, Wash off the bridge is in the galley — which is a fact about Wash.
+    haunt: Option<[f64; 2]>,
     /// Walking in for the first time. A newly hired agent arrives through a
     /// door instead of materialising at its desk.
     entering: bool,
@@ -103,7 +109,7 @@ impl Walker {
         Self {
             x, y, tx: x, ty: y, at: None, facing_back: false, step: 0, step_t: 0.0,
             linger: 0.0, roam, seed, saying: None, say_t: 0.0, restless,
-            home: None, entering: false,
+            home: None, haunt: None, entering: false,
         }
     }
 
@@ -183,13 +189,16 @@ impl Walker {
             // Mostly go home; sometimes wander. How often depends on how
             // restless the character is, so Creed roams and Stanley sits.
             let wander = self.rand() < 0.25 + self.restless.clamp(0.0, 1.0) * 0.5;
-            match (self.home, wander) {
-                (Some([hx, hy]), false) => {
-                    // A little scatter around the desk, so two visits do not
-                    // land on the identical pixel.
-                    self.tx = hx + (self.rand() - 0.5) * 6.0;
-                    self.ty = hy + (self.rand() - 0.5) * 4.0;
-                }
+            // A little scatter around a post, so two visits do not land on the
+            // identical pixel.
+            let settle = |w: &mut Self, [hx, hy]: [f64; 2]| {
+                w.tx = hx + (w.rand() - 0.5) * 6.0;
+                w.ty = hy + (w.rand() - 0.5) * 4.0;
+            };
+            let second = self.haunt.filter(|_| self.rand() < 0.6);
+            match (self.home, wander, second) {
+                (Some(h), false, _) => settle(self, h),
+                (_, true, Some(h)) => settle(self, h),
                 _ => {
                     let [x0, y0, x1, y1] = self.roam;
                     self.tx = x0 + self.rand() * (x1 - x0);
@@ -206,9 +215,12 @@ impl Walker {
 
     fn send_to(&mut self, s: &theme::Station) {
         self.at = Some(s.kind.clone());
-        // Stand below the station, so the figure does not cover the label.
+        // Stand just clear of the station's bottom edge, so the figure does not
+        // cover the label. Off the station's own height rather than a constant:
+        // a console drawn flat on a deck plan is a tenth the depth of one drawn
+        // side-on, and a fixed offset put the figure in the next room along.
         self.tx = s.x + s.w / 2.0 - pixel::SCENE_W as f64 / 2.0;
-        self.ty = s.y + 20.0;
+        self.ty = s.y + s.h - 2.0;
     }
 }
 
@@ -220,6 +232,26 @@ pub struct Occupant {
     pub archetype: String,
     pub status: String,
     pub live: bool,
+    /// Where this agent was posted when it was hired, as POI ids.
+    ///
+    /// The operator's answer, and it beats the character's own: someone who
+    /// put their engineer on the bridge meant it. Empty, or naming a place
+    /// this theme does not have, falls back to the character — which is the
+    /// ordinary case after a theme switch, since a Serenity post id means
+    /// nothing on the Office floor.
+    pub primary_poi: String,
+    pub secondary_poi: String,
+}
+
+/// Where an agent belongs on this floor, and where it is found when it is not
+/// there. Its own posting first, then the character's, then the desk.
+fn posts(t: &Theme, o: &Occupant) -> (Option<[f64; 2]>, Option<[f64; 2]>) {
+    let pick = |id: &str, secondary: bool| {
+        t.poi(id)
+            .map(|p| [p.x, p.y])
+            .or_else(|| t.post(&o.archetype, secondary))
+    };
+    (pick(&o.primary_poi, false), pick(&o.secondary_poi, true))
 }
 
 /// Baked sprite frames for one character: three gait phases, front and back.
@@ -404,7 +436,9 @@ pub fn Floor(
                                 .map(|c| c.personality.restless)
                                 .unwrap_or(0.5);
                             let mut walker = Walker::new(i, seed, t.layout.roam, restless);
-                            walker.home = t.layout.desks.get(&o.archetype).copied();
+                            let (home, haunt) = posts(t, o);
+                            walker.home = home;
+                            walker.haunt = haunt;
                             // Arrive through a doorway rather than appearing at
                             // the desk: someone joining the floor should be seen
                             // to join it.
@@ -426,10 +460,12 @@ pub fn Floor(
                             // the new room's walls.
                             walker.roam = t.layout.roam;
                             walker.restless = p.restless;
-                            // Desks belong to the THEME, so a switch re-homes
+                            // Posts belong to the THEME, so a switch re-homes
                             // everyone rather than leaving them at the old room's
                             // coordinates.
-                            walker.home = t.layout.desks.get(&o.archetype).copied();
+                            let (home, haunt) = posts(t, o);
+                            walker.home = home;
+                            walker.haunt = haunt;
                             walker.advance(dt, &p);
                         }
                     }
@@ -553,6 +589,23 @@ fn draw(
         ctx.fill_rect(0.0, l.wall_depth - 2.0, ROOM_W, 2.0);
     }
 
+    // A blueprint grid, for a room read as a plan rather than as a room. Drawn
+    // under everything, so it reads as paper the ship is printed on.
+    if let Some(grid) = &l.grid {
+        ctx.set_fill_style_str(grid);
+        let step = l.grid_step.max(2.0);
+        let mut x = 0.0;
+        while x < ROOM_W {
+            ctx.fill_rect(x, l.wall_depth, 1.0, ROOM_H - l.wall_depth);
+            x += step;
+        }
+        let mut y = l.wall_depth;
+        while y < ROOM_H {
+            ctx.fill_rect(0.0, y, ROOM_W, 1.0);
+            y += step;
+        }
+    }
+
     // Scenery, in order — later props sit on top, which is how a theme author
     // layers a console onto a dais without needing a z-index.
     for p in &l.props {
@@ -566,6 +619,14 @@ fn draw(
             ctx.fill();
         } else {
             ctx.fill_rect(p.x, p.y, p.w, p.h);
+        }
+        // An outline is what turns a stack of rectangles into a deck plan:
+        // rooms on a plan are read from their walls, not their fill. Stroked at
+        // whole-pixel offsets, or a 1px line lands across two rows and blurs.
+        if let Some(b) = &p.border {
+            ctx.set_stroke_style_str(b);
+            ctx.set_line_width(1.0);
+            ctx.stroke_rect(p.x + 0.5, p.y + 0.5, p.w - 1.0, p.h - 1.0);
         }
         // A darker front lip is what makes a flat slab read as a surface you
         // could put something on.
@@ -583,17 +644,40 @@ fn draw(
         // painted rectangle.
         ctx.set_fill_style_str("rgba(255,255,255,0.10)");
         ctx.fill_rect(d.x + 2.0, d.y + 2.0, d.w - 4.0, d.h - 4.0);
-        ctx.set_fill_style_str("rgba(255,255,255,0.7)");
-        ctx.set_font("5px ui-monospace, monospace");
-        let _ = ctx.fill_text(&d.label, d.x + 1.0, d.y + d.h - 2.0);
+        // Only where there is room for it. A hatch drawn six pixels deep on a
+        // deck plan gets its name from the place it opens onto instead, and a
+        // label painted across it would be unreadable in both.
+        if d.h >= 14.0 {
+            ctx.set_fill_style_str("rgba(255,255,255,0.7)");
+            ctx.set_font("5px ui-monospace, monospace");
+            let _ = ctx.fill_text(&d.label, d.x + 1.0, d.y + d.h - 2.0);
+        }
     }
+
 
     for st in &l.stations {
         ctx.set_fill_style_str(st.color.as_deref().unwrap_or("#6a6a72"));
-        ctx.fill_rect(st.x, st.y, st.w, 22.0);
+        ctx.fill_rect(st.x, st.y, st.w, st.h);
         ctx.set_fill_style_str("rgba(255,255,255,0.82)");
         ctx.set_font("6px ui-monospace, monospace");
-        let _ = ctx.fill_text(&st.label, st.x + 3.0, st.y + 13.0);
+        // Centred in the slab rather than a fixed drop from its top, so a
+        // shallow console keeps its label inside itself.
+        let _ = ctx.fill_text(&st.label, st.x + 3.0, st.y + st.h / 2.0 + 2.0);
+    }
+    // The map's legend. Painted before the figures, so someone standing at a
+    // post covers their own label rather than being covered by it.
+    if l.poi_labels {
+        ctx.set_font("4px ui-monospace, monospace");
+        ctx.set_text_align("center");
+        for poi in &l.pois {
+            ctx.set_fill_style_str("rgba(150,190,235,0.85)");
+            let _ = ctx.fill_text(
+                &poi.label,
+                poi.x + pixel::SCENE_W as f64 / 2.0,
+                (poi.y - 4.0).max(5.0),
+            );
+        }
+        ctx.set_text_align("start");
     }
 
     // Back to front, so a figure lower on the floor overlaps one behind it.

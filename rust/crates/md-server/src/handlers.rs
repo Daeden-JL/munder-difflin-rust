@@ -858,7 +858,7 @@ fn telemetry_snapshot(ctx: &Ctx) -> Value {
 pub fn recast(ctx: &Ctx) -> RpcResponse {
     let cast: Value = tri!(ctx.arg(0));
     let Some(list) = cast.as_array() else {
-        return RpcResponse::ok(json!({ "ok": false, "error": "expected a list of {id,name,persona}" }));
+        return RpcResponse::ok(json!({ "ok": false, "error": "expected a list of {id,name,persona,archetype}" }));
     };
 
     let hive = hive::Hive::new(ctx.paths.hive_root());
@@ -902,6 +902,11 @@ pub fn recast(ctx: &Ctx) -> RpcResponse {
             cwd: a["cwd"].as_str().unwrap_or("").to_string(),
             is_god: a["isGod"].as_bool().unwrap_or(false),
             persona: entry["persona"].as_str().map(String::from),
+            // A recast pins the slot it just dressed the agent in, so the
+            // binding stops depending on the ordering that produced it.
+            archetype: entry["archetype"].as_str().map(String::from),
+            primary_poi: entry["primaryPoi"].as_str().map(String::from),
+            secondary_poi: entry["secondaryPoi"].as_str().map(String::from),
         };
         let p = spawn::Provisioner {
             hive: &hive,
@@ -1901,6 +1906,9 @@ fn pty_spawn(ctx: &Ctx) -> RpcResponse {
             cwd: cwd.display().to_string(),
             is_god: meta.get("isGod").and_then(|v| v.as_bool()).unwrap_or(false),
             persona: meta.get("persona").and_then(|v| v.as_str()).map(String::from),
+            archetype: meta.get("archetype").and_then(|v| v.as_str()).map(String::from),
+            primary_poi: meta.get("primaryPoi").and_then(|v| v.as_str()).map(String::from),
+            secondary_poi: meta.get("secondaryPoi").and_then(|v| v.as_str()).map(String::from),
         };
         let hive = hive::Hive::new(ctx.paths.hive_root());
 

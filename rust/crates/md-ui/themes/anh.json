@@ -262,6 +262,74 @@
           104
         ]
       }
+    ],
+    "pois": [
+      {
+        "id": "war-room",
+        "label": "War Room",
+        "x": 110,
+        "y": 66
+      },
+      {
+        "id": "berth",
+        "label": "Smuggler's Berth",
+        "x": 196,
+        "y": 96
+      },
+      {
+        "id": "briefing-table",
+        "label": "Briefing Table",
+        "x": 140,
+        "y": 66
+      },
+      {
+        "id": "hangar-deck",
+        "label": "Hangar Deck",
+        "x": 236,
+        "y": 84
+      },
+      {
+        "id": "protocol-bay",
+        "label": "Protocol Bay",
+        "x": 96,
+        "y": 118
+      },
+      {
+        "id": "socket",
+        "label": "Astromech Socket",
+        "x": 60,
+        "y": 64
+      },
+      {
+        "id": "detention",
+        "label": "Detention Corridor",
+        "x": 28,
+        "y": 128
+      },
+      {
+        "id": "alcove",
+        "label": "Meditation Alcove",
+        "x": 60,
+        "y": 96
+      },
+      {
+        "id": "cantina-booth",
+        "label": "Cantina Booth",
+        "x": 140,
+        "y": 118
+      },
+      {
+        "id": "bay-doors",
+        "label": "Bay Doors",
+        "x": 30,
+        "y": 114
+      },
+      {
+        "id": "ramp",
+        "label": "Boarding Ramp",
+        "x": 176,
+        "y": 104
+      }
     ]
   },
   "cast": {
@@ -300,7 +368,9 @@
           "Governor.",
           "You came back."
         ],
-        "restless": 0.55
+        "restless": 0.55,
+        "primaryPoi": "war-room",
+        "secondaryPoi": "briefing-table"
       }
     },
     "second": {
@@ -338,7 +408,9 @@
           "Hey, kid.",
           "Chewie."
         ],
-        "restless": 0.7
+        "restless": 0.7,
+        "primaryPoi": "berth",
+        "secondaryPoi": "hangar-deck"
       }
     },
     "operator": {
@@ -375,7 +447,9 @@
           "Ben!",
           "Hey!"
         ],
-        "restless": 0.8
+        "restless": 0.8,
+        "primaryPoi": "briefing-table",
+        "secondaryPoi": "socket"
       }
     },
     "engineer": {
@@ -415,7 +489,9 @@
           "Rawrr!",
           "Wrrf."
         ],
-        "restless": 0.5
+        "restless": 0.5,
+        "primaryPoi": "hangar-deck",
+        "secondaryPoi": "ramp"
       }
     },
     "analyst": {
@@ -452,7 +528,9 @@
           "Oh! Hello!",
           "Master Luke!"
         ],
-        "restless": 0.45
+        "restless": 0.45,
+        "primaryPoi": "protocol-bay",
+        "secondaryPoi": "socket"
       }
     },
     "wildcard": {
@@ -494,7 +572,9 @@
           "Weep-woo!",
           "Bwoop."
         ],
-        "restless": 0.9
+        "restless": 0.9,
+        "primaryPoi": "socket",
+        "secondaryPoi": "hangar-deck"
       }
     },
     "muscle": {
@@ -537,7 +617,9 @@
           "We meet again.",
           "..."
         ],
-        "restless": 0.2
+        "restless": 0.2,
+        "primaryPoi": "detention",
+        "secondaryPoi": "bay-doors"
       }
     },
     "counsel": {
@@ -581,7 +663,9 @@
           "Hello there.",
           "Old friend."
         ],
-        "restless": 0.35
+        "restless": 0.35,
+        "primaryPoi": "alcove",
+        "secondaryPoi": "war-room"
       }
     },
     "liaison": {
@@ -625,7 +709,9 @@
           "Hello, what have we here?",
           "Old buddy!"
         ],
-        "restless": 0.6
+        "restless": 0.6,
+        "primaryPoi": "cantina-booth",
+        "secondaryPoi": "bay-doors"
       }
     }
   }

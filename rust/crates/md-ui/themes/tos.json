@@ -250,6 +250,74 @@
           86
         ]
       }
+    ],
+    "pois": [
+      {
+        "id": "command-chair",
+        "label": "Command Chair",
+        "x": 158,
+        "y": 108
+      },
+      {
+        "id": "science",
+        "label": "Science",
+        "x": 36,
+        "y": 66
+      },
+      {
+        "id": "helm",
+        "label": "Helm",
+        "x": 96,
+        "y": 140
+      },
+      {
+        "id": "engineering",
+        "label": "Engineering",
+        "x": 256,
+        "y": 100
+      },
+      {
+        "id": "medical",
+        "label": "Medical",
+        "x": 36,
+        "y": 100
+      },
+      {
+        "id": "navigation",
+        "label": "Navigation",
+        "x": 140,
+        "y": 140
+      },
+      {
+        "id": "life-sciences",
+        "label": "Life Sciences",
+        "x": 36,
+        "y": 134
+      },
+      {
+        "id": "communications",
+        "label": "Communications",
+        "x": 256,
+        "y": 66
+      },
+      {
+        "id": "yeoman",
+        "label": "Yeoman's Post",
+        "x": 256,
+        "y": 134
+      },
+      {
+        "id": "turbolift",
+        "label": "Turbolift",
+        "x": 162,
+        "y": 86
+      },
+      {
+        "id": "forward-viewer",
+        "label": "Forward Viewer",
+        "x": 130,
+        "y": 60
+      }
     ]
   },
   "cast": {
@@ -288,7 +356,9 @@
           "Bones.",
           "Report."
         ],
-        "restless": 0.7
+        "restless": 0.7,
+        "primaryPoi": "command-chair",
+        "secondaryPoi": "forward-viewer"
       }
     },
     "second": {
@@ -326,7 +396,9 @@
           "Captain.",
           "Doctor."
         ],
-        "restless": 0.2
+        "restless": 0.2,
+        "primaryPoi": "science",
+        "secondaryPoi": "medical"
       }
     },
     "operator": {
@@ -364,7 +436,9 @@
           "Hey.",
           "Sir."
         ],
-        "restless": 0.5
+        "restless": 0.5,
+        "primaryPoi": "helm",
+        "secondaryPoi": "navigation"
       }
     },
     "engineer": {
@@ -404,7 +478,9 @@
           "Aye.",
           "Laddie."
         ],
-        "restless": 0.4
+        "restless": 0.4,
+        "primaryPoi": "engineering",
+        "secondaryPoi": "command-chair"
       }
     },
     "analyst": {
@@ -442,7 +518,9 @@
           "Jim.",
           "Spock."
         ],
-        "restless": 0.45
+        "restless": 0.45,
+        "primaryPoi": "medical",
+        "secondaryPoi": "life-sciences"
       }
     },
     "wildcard": {
@@ -479,7 +557,9 @@
           "Keptin!",
           "Hello!"
         ],
-        "restless": 0.8
+        "restless": 0.8,
+        "primaryPoi": "navigation",
+        "secondaryPoi": "helm"
       }
     },
     "muscle": {
@@ -517,7 +597,9 @@
           "Doctor.",
           "Nurse."
         ],
-        "restless": 0.35
+        "restless": 0.35,
+        "primaryPoi": "life-sciences",
+        "secondaryPoi": "medical"
       }
     },
     "counsel": {
@@ -555,7 +637,9 @@
           "Captain.",
           "Hello."
         ],
-        "restless": 0.4
+        "restless": 0.4,
+        "primaryPoi": "communications",
+        "secondaryPoi": "forward-viewer"
       }
     },
     "liaison": {
@@ -595,7 +679,9 @@
           "Sir.",
           "Morning."
         ],
-        "restless": 0.5
+        "restless": 0.5,
+        "primaryPoi": "yeoman",
+        "secondaryPoi": "turbolift"
       }
     }
   }

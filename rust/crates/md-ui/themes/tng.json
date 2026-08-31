@@ -261,6 +261,74 @@
           90
         ]
       }
+    ],
+    "pois": [
+      {
+        "id": "captains-chair",
+        "label": "Captain's Chair",
+        "x": 150,
+        "y": 100
+      },
+      {
+        "id": "first-officer",
+        "label": "First Officer",
+        "x": 120,
+        "y": 100
+      },
+      {
+        "id": "ops",
+        "label": "Ops",
+        "x": 30,
+        "y": 68
+      },
+      {
+        "id": "engineering",
+        "label": "Engineering",
+        "x": 268,
+        "y": 68
+      },
+      {
+        "id": "science-one",
+        "label": "Science I",
+        "x": 180,
+        "y": 100
+      },
+      {
+        "id": "counsellor",
+        "label": "Counsellor",
+        "x": 30,
+        "y": 128
+      },
+      {
+        "id": "tactical",
+        "label": "Tactical",
+        "x": 268,
+        "y": 128
+      },
+      {
+        "id": "ten-forward",
+        "label": "Ten Forward",
+        "x": 96,
+        "y": 140
+      },
+      {
+        "id": "conn",
+        "label": "Conn",
+        "x": 196,
+        "y": 140
+      },
+      {
+        "id": "ready-room",
+        "label": "Ready Room",
+        "x": 274,
+        "y": 92
+      },
+      {
+        "id": "viewscreen",
+        "label": "Viewscreen",
+        "x": 130,
+        "y": 62
+      }
     ]
   },
   "cast": {
@@ -299,7 +367,9 @@
           "Number One.",
           "Come."
         ],
-        "restless": 0.35
+        "restless": 0.35,
+        "primaryPoi": "captains-chair",
+        "secondaryPoi": "ready-room"
       }
     },
     "second": {
@@ -338,7 +408,9 @@
           "Captain.",
           "Hey."
         ],
-        "restless": 0.55
+        "restless": 0.55,
+        "primaryPoi": "first-officer",
+        "secondaryPoi": "conn"
       }
     },
     "operator": {
@@ -376,7 +448,9 @@
           "Hello, sir.",
           "Greetings."
         ],
-        "restless": 0.3
+        "restless": 0.3,
+        "primaryPoi": "ops",
+        "secondaryPoi": "viewscreen"
       }
     },
     "engineer": {
@@ -415,7 +489,9 @@
           "Hey, Data.",
           "Commander."
         ],
-        "restless": 0.6
+        "restless": 0.6,
+        "primaryPoi": "engineering",
+        "secondaryPoi": "tactical"
       }
     },
     "analyst": {
@@ -455,7 +531,9 @@
           "Jean-Luc.",
           "Doctor."
         ],
-        "restless": 0.4
+        "restless": 0.4,
+        "primaryPoi": "science-one",
+        "secondaryPoi": "ops"
       }
     },
     "wildcard": {
@@ -493,7 +571,9 @@
           "Hello.",
           "I know."
         ],
-        "restless": 0.5
+        "restless": 0.5,
+        "primaryPoi": "counsellor",
+        "secondaryPoi": "ten-forward"
       }
     },
     "muscle": {
@@ -533,7 +613,9 @@
           "Commander.",
           "Hrmph."
         ],
-        "restless": 0.25
+        "restless": 0.25,
+        "primaryPoi": "tactical",
+        "secondaryPoi": "engineering"
       }
     },
     "counsel": {
@@ -576,7 +658,9 @@
           "Hello.",
           "There you are."
         ],
-        "restless": 0.3
+        "restless": 0.3,
+        "primaryPoi": "ten-forward",
+        "secondaryPoi": "conn"
       }
     },
     "liaison": {
@@ -618,7 +702,9 @@
           "Captain!",
           "Hi!"
         ],
-        "restless": 0.85
+        "restless": 0.85,
+        "primaryPoi": "conn",
+        "secondaryPoi": "ops"
       }
     }
   }

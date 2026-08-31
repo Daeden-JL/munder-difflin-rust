@@ -44,7 +44,9 @@
           "Hey! Look who it is.",
           "There he is!"
         ],
-        "restless": 0.85
+        "restless": 0.85,
+        "primaryPoi": "corner-office",
+        "secondaryPoi": "conference"
       }
     },
     "second": {
@@ -89,7 +91,9 @@
           "Report.",
           "State your business."
         ],
-        "restless": 0.3
+        "restless": 0.3,
+        "primaryPoi": "sales",
+        "secondaryPoi": "annex"
       }
     },
     "operator": {
@@ -131,7 +135,9 @@
           "Hey.",
           "How's it going."
         ],
-        "restless": 0.55
+        "restless": 0.55,
+        "primaryPoi": "annex",
+        "secondaryPoi": "reception"
       }
     },
     "engineer": {
@@ -174,7 +180,9 @@
           "Hey buddy.",
           "You want some?"
         ],
-        "restless": 0.25
+        "restless": 0.25,
+        "primaryPoi": "accounting",
+        "secondaryPoi": "break-room"
       }
     },
     "analyst": {
@@ -211,7 +219,9 @@
           "Hello.",
           "Mm."
         ],
-        "restless": 0.35
+        "restless": 0.35,
+        "primaryPoi": "audit",
+        "secondaryPoi": "conference"
       }
     },
     "wildcard": {
@@ -249,7 +259,9 @@
           "Do I know you?",
           "We've met. Probably."
         ],
-        "restless": 0.9
+        "restless": 0.9,
+        "primaryPoi": "quality",
+        "secondaryPoi": "warehouse"
       }
     },
     "muscle": {
@@ -294,7 +306,9 @@
           "Mm-hm.",
           "..."
         ],
-        "restless": 0.15
+        "restless": 0.15,
+        "primaryPoi": "warehouse",
+        "secondaryPoi": "break-room"
       }
     },
     "counsel": {
@@ -334,7 +348,9 @@
           "Oh \u2014 hi.",
           "Sorry, sorry."
         ],
-        "restless": 0.4
+        "restless": 0.4,
+        "primaryPoi": "hr",
+        "secondaryPoi": "reception"
       }
     },
     "liaison": {
@@ -380,7 +396,9 @@
           "Hi!",
           "Morning."
         ],
-        "restless": 0.5
+        "restless": 0.5,
+        "primaryPoi": "reception",
+        "secondaryPoi": "break-room"
       }
     }
   },
@@ -682,6 +700,74 @@
           22,
           116
         ]
+      }
+    ],
+    "pois": [
+      {
+        "id": "corner-office",
+        "label": "Corner Office",
+        "x": 268,
+        "y": 60
+      },
+      {
+        "id": "sales",
+        "label": "Sales",
+        "x": 64,
+        "y": 84
+      },
+      {
+        "id": "annex",
+        "label": "Annex",
+        "x": 114,
+        "y": 84
+      },
+      {
+        "id": "accounting",
+        "label": "Accounting",
+        "x": 180,
+        "y": 84
+      },
+      {
+        "id": "audit",
+        "label": "Audit Desk",
+        "x": 230,
+        "y": 84
+      },
+      {
+        "id": "quality",
+        "label": "Quality Assurance",
+        "x": 64,
+        "y": 122
+      },
+      {
+        "id": "warehouse",
+        "label": "Warehouse",
+        "x": 114,
+        "y": 122
+      },
+      {
+        "id": "hr",
+        "label": "Human Resources",
+        "x": 180,
+        "y": 122
+      },
+      {
+        "id": "reception",
+        "label": "Reception",
+        "x": 230,
+        "y": 122
+      },
+      {
+        "id": "break-room",
+        "label": "Break Room",
+        "x": 34,
+        "y": 118
+      },
+      {
+        "id": "conference",
+        "label": "Conference Room",
+        "x": 130,
+        "y": 60
       }
     ]
   }

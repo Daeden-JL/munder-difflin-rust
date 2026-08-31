@@ -35,6 +35,15 @@ pub struct AgentMeta {
     /// behaves. Written into `identity.md` and the system prompt, so a recast
     /// changes what the agent IS, not only what it looks like.
     pub persona: Option<String>,
+    /// The cast slot the operator picked at hire — `engineer`, `counsel` — and
+    /// the two places on the map they posted it to.
+    ///
+    /// Durable, and `None` means "leave whatever is already recorded": a
+    /// respawn carries no opinion about the floor, and letting it write one
+    /// would silently un-post every agent on the next restart.
+    pub archetype: Option<String>,
+    pub primary_poi: Option<String>,
+    pub secondary_poi: Option<String>,
 }
 
 /// What the PTY spawn needs to add so the agent is hive-aware.
@@ -272,6 +281,17 @@ impl Provisioner<'_> {
         ] {
             entry.insert(k.into(), v);
         }
+        // Only when the caller has one. These are the operator's choices, not
+        // the spawn's, and a restart must not overwrite them with nothing.
+        for (k, v) in [
+            ("archetype", &meta.archetype),
+            ("primaryPoi", &meta.primary_poi),
+            ("secondaryPoi", &meta.secondary_poi),
+        ] {
+            if let Some(v) = v.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                entry.insert(k.into(), json!(v));
+            }
+        }
         entry.entry("capabilities").or_insert_with(|| json!([]));
         agents.insert(meta.id.clone(), Value::Object(entry));
 
@@ -426,7 +446,46 @@ mod tests {
             cwd: std::env::temp_dir().display().to_string(),
             is_god: false,
             persona: Some("Believes every rule is load-bearing.".into()),
+            archetype: None,
+            primary_poi: None,
+            secondary_poi: None,
         }
+    }
+
+    /// A hire's chosen personality and posting must outlive the process that
+    /// made it. A respawn carries no opinion about the floor, so writing one
+    /// would silently un-post every agent the first time anything restarted.
+    #[test]
+    fn a_chosen_personality_and_posting_survive_a_respawn() {
+        let (root, hive) = setup();
+        let p = Provisioner { hive: &hive, hive_root: root.clone(), hook_bin: "/usr/local/bin/md-hook".into(),
+                                  config_file: std::env::temp_dir().join("no-config.json") };
+
+        let mut hired = meta("kaylee");
+        hired.archetype = Some("engineer".into());
+        hired.primary_poi = Some("engine-room".into());
+        hired.secondary_poi = Some("cargo-hold".into());
+        p.ensure_agent(&hired).unwrap();
+
+        let entry = |h: &Hive| h.registry()["agents"]["kaylee"].clone();
+        let a = entry(&hive);
+        assert_eq!(a["archetype"], "engineer");
+        assert_eq!(a["primaryPoi"], "engine-room");
+        assert_eq!(a["secondaryPoi"], "cargo-hold");
+
+        // A restart: same agent, nothing said about the floor.
+        p.ensure_agent(&meta("kaylee")).unwrap();
+        let a = entry(&hive);
+        assert_eq!(a["archetype"], "engineer", "a respawn un-posted the agent");
+        assert_eq!(a["primaryPoi"], "engine-room");
+        assert_eq!(a["secondaryPoi"], "cargo-hold");
+
+        // A blank is a blank, not an erasure — the UI sends "" for "wherever
+        // this character usually works".
+        let mut blank = meta("kaylee");
+        blank.primary_poi = Some("  ".into());
+        p.ensure_agent(&blank).unwrap();
+        assert_eq!(entry(&hive)["primaryPoi"], "engine-room");
     }
 
     #[test]

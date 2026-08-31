@@ -105,7 +105,9 @@ garment rather than three.
   "idle":    ["We're still flyin'.", "That's good enough."],
   "working": ["Let's get to it.", "We do the job, we get paid."],
   "greet":   ["Cap'n.", "We're all right."],
-  "restless": 0.6
+  "restless": 0.6,
+  "primaryPoi": "bridge",        // where they work
+  "secondaryPoi": "cargo-hold"   // where else you find them
 }
 ```
 
@@ -123,6 +125,11 @@ It shows four ways:
   neighbours would chatter constantly.
 * `restless` (0.0–1.0) scales how long they linger before wandering. Creed at
   0.9 and Stanley at 0.15 move differently without a line of movement code.
+* `primaryPoi` / `secondaryPoi` are POI ids (see *The map*, below). The first is
+  the character's workstation — they idle there and return to it. The second is
+  where they turn up when they wander, which is what stops "not at your desk"
+  meaning "anywhere". Both are the theme's DEFAULT: an operator can post an
+  agent somewhere else when they hire it.
 
 Write short lines. They render in a speech bubble about 150 pixels wide.
 
@@ -136,9 +143,13 @@ Write short lines. They render in a speech bubble about 150 pixels wide.
   "wallDepth": 42,          // how deep the wall band is
   "floor": "#6b5f4c",
   "trim": "#4a4034",        // skirting between the two planes
+  "grid": "#101f3c",        // optional blueprint grid over the floor
+  "gridStep": 8,
   "props": [ ... ],         // scenery
   "stations": [ ... ],      // where work happens
-  "desks": { ... },         // each archetype's own place
+  "pois": [ ... ],          // named places, and the map's legend
+  "poiLabels": true,        // paint those names onto the room
+  "desks": { ... },         // each archetype's fallback place
   "doors": [ ... ],         // ways in and out
   "roam": [48, 84, 268, 140]
 }
@@ -157,7 +168,9 @@ sampling, so think in whole pixels and keep detail coarse.
 Painted in order, so a later prop sits on top of an earlier one — that is how
 you put a console on a dais without a z-index. `lip` adds a darker front edge,
 which is what makes a flat rectangle read as a surface you could put a mug on.
-`round` draws an ellipse: rugs, hatches, a warp core, a landing pad.
+`round` draws an ellipse: rugs, hatches, a warp core, a landing pad. `border`
+outlines the rectangle, which is what turns a stack of them into a deck plan —
+rooms on a plan are read from their walls, not their fill.
 
 Primitives rather than sprites, on purpose. A room you can write in a text
 editor is a room people will actually write.
@@ -165,7 +178,7 @@ editor is a room people will actually write.
 ### Stations: where work happens
 
 ```jsonc
-{ "kind": "terminal", "label": "ENGINE", "x": 276, "y": 92, "w": 36, "color": "#6a4a3a" }
+{ "kind": "terminal", "label": "ENGINE", "x": 276, "y": 92, "w": 36, "h": 22, "color": "#6a4a3a" }
 ```
 
 A station is a **destination**, and this is what makes the floor mean something.
@@ -185,6 +198,42 @@ walks to the matching station:
 ENGINE on a ship, ENGINEERING on a bridge, or HANGAR in a docking bay. That is
 where most of a theme's character comes from.
 
+`h` (default 22) is how deep the console is drawn, and the figure stands just
+clear of its bottom edge. A room seen side-on can afford a chunky slab; a room
+seen from above cannot, because the slab would be most of the room — so Serenity
+uses `"h": 10` and puts each console at the top of the room it belongs to, which
+lands the person who works there in the middle of it.
+
+### POIs: the places on the map
+
+```jsonc
+"pois": [
+  { "id": "engine-room", "label": "Engine", "x": 282, "y": 92 },
+  { "id": "galley",      "label": "Galley", "x": 128, "y": 100 }
+]
+```
+
+A station answers *where does this tool happen*; a POI answers *where does this
+person belong*. Keeping them separate is what stops the floor emptying out
+whenever nobody is running a tool: the engine room is Kaylee's post whether or
+not there is a shell open in it.
+
+`x`/`y` is a **standing spot** — the top-left of an 18×32 figure, so the feet
+land 32 pixels below. Place a post so its occupant stands inside the room it
+names, not so the coordinate does.
+
+POIs are also the **posting list**. When someone hires an agent they pick a
+personality from the cast and, optionally, a primary and secondary POI to
+override that character's own. The ids are therefore public: renaming one
+orphans every agent posted to it, which is why `id` is separate from `label`.
+
+`poiLabels` paints those names onto the room. True for a map read as a plan,
+false for a room read as a room — an office does not label its own kitchen.
+
+Post ids are per-theme, and that is fine: an agent carrying `engine-room` onto
+the Office floor falls back to whatever the Office character it is dressed as
+does. Nobody is ever stranded at (0, 0).
+
 ### Desks: where each character belongs
 
 ```jsonc
@@ -195,10 +244,14 @@ where most of a theme's character comes from.
 ```
 
 One `[x, y]` per archetype. Characters **gravitate home**: an idle agent mostly
-returns to its own desk and only sometimes wanders, weighted by `restless`. A
+returns to its own post and only sometimes wanders, weighted by `restless`. A
 floor where everyone drifts anywhere reads as a crowd; a floor where everyone
 has a place reads as a workplace. Give the `leader` the best seat — the corner
 office, the captain's chair, the centre of the bridge.
+
+Desks are now the **fallback**, below the agent's own posting and the
+character's `primaryPoi`. Keep them: they are what catches a character with no
+post and an agent carrying a post id from a theme this one has never heard of.
 
 ### Doors: ways in and out
 
@@ -232,7 +285,8 @@ cd rust && cargo test -p md-ui --target aarch64-apple-darwin
 
 The tests assert that every theme fills all nine slots with a paintable
 character that has a trait line and something to say, provides all five station
-kinds, keeps its roam box out of the wall, and shares neither a character nor a
+kinds, names at least six places and posts every character to two of them that
+exist, keeps its roam box out of the wall, and shares neither a character nor a
 floor colour with another theme — the check that a theme is a *place* rather
 than a palette swap.
 

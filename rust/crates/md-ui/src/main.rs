@@ -45,6 +45,13 @@ struct Agent {
     /// Present once the agent's CLI has reported a session.
     has_session: bool,
     live: bool,
+    /// The character this agent was hired as, and where it was posted. Chosen
+    /// by the operator and stored on the registry entry, so it survives a
+    /// restart and a theme switch — a personality picked once should not be
+    /// re-rolled by the ordering the next time the floor is read.
+    archetype: String,
+    primary_poi: String,
+    secondary_poi: String,
 }
 
 #[component]
@@ -94,7 +101,14 @@ fn App() -> impl IntoView {
         // that member, which is only knowable with the theme in hand.
         let themes = theme::builtin();
         let t = themes.get(theme.get() % themes.len().max(1));
-        theme::assign_in(&ids, god.as_deref(), t)
+        // A personality the operator chose at hire beats both the name match
+        // and the ordering — it is the one binding somebody actually asked for.
+        let pinned: std::collections::HashMap<String, String> = list
+            .iter()
+            .filter(|a| !a.archetype.is_empty())
+            .map(|a| (a.id.clone(), a.archetype.clone()))
+            .collect();
+        theme::assign_in(&ids, god.as_deref(), t, &pinned)
     });
 
     // A successful authenticated call is the session probe: a cookie from an
@@ -174,6 +188,9 @@ fn App() -> impl IntoView {
                             on_hold: a["onHold"].as_bool().unwrap_or(false),
                             has_session: a["sessionId"].as_str().is_some_and(|s| !s.is_empty()),
                             live: live_ids.contains(id),
+                            archetype: a["archetype"].as_str().unwrap_or("").to_string(),
+                            primary_poi: a["primaryPoi"].as_str().unwrap_or("").to_string(),
+                            secondary_poi: a["secondaryPoi"].as_str().unwrap_or("").to_string(),
                         })
                         .collect()
                 })
@@ -292,6 +309,8 @@ fn occupants(mut agents: Vec<Agent>, slots: &std::collections::HashMap<String, S
             id: a.id,
             name: a.name,
             live: a.live,
+            primary_poi: a.primary_poi,
+            secondary_poi: a.secondary_poi,
         })
         .collect()
 }

@@ -12,6 +12,20 @@ use serde_json::{json, Value};
 use crate::api;
 use crate::theme;
 
+/// The two entries in the personality picker that are not characters.
+const RANDOM: &str = "__random";
+const CUSTOM: &str = "__custom";
+
+/// Something to pick with. The floor's own PRNG is per-walker and seeded from
+/// an agent id, which is exactly the wrong thing here — the agent does not
+/// exist yet, and two hires in a row must not draw the same name.
+fn spin() -> usize {
+    window()
+        .performance()
+        .map(|p| p.now().to_bits() as usize)
+        .unwrap_or(0)
+}
+
 #[component]
 pub fn Config(
     theme_idx: RwSignal<usize>,
@@ -71,6 +85,71 @@ fn Agents(
     let command = RwSignal::new("claude".to_string());
     let is_god = RwSignal::new(false);
     let roster = RwSignal::new(Vec::<Value>::new());
+    // Which of the theme's personalities the new agent gets: an archetype slot,
+    // RANDOM, or CUSTOM. Random by default — most hires do not care who they
+    // look like, and making them choose first is a toll on the common path.
+    let personality = RwSignal::new(RANDOM.to_string());
+    let persona = RwSignal::new(String::new());
+    // Where they are posted, as POI ids. Empty means "wherever this character
+    // usually works", which is what keeps the form honest across a theme
+    // switch: a Serenity post id is meaningless on the Office floor.
+    let primary = RwSignal::new(String::new());
+    let secondary = RwSignal::new(String::new());
+
+    let current = move || {
+        let themes = theme::builtin();
+        let i = theme_idx.get() % themes.len().max(1);
+        themes.into_iter().nth(i)
+    };
+    // Only slots the theme actually fills. `character()` falls back, and a
+    // picker built on it would offer the same face under three names.
+    let cast_options = move || -> Vec<(String, String, String)> {
+        let Some(t) = current() else { return Vec::new() };
+        theme::ARCHETYPES
+            .iter()
+            .filter_map(|a| {
+                t.cast.get(*a).map(|c| {
+                    (a.to_string(), c.display.clone(), c.personality.trait_line.clone())
+                })
+            })
+            .collect()
+    };
+    let poi_options = move || -> Vec<(String, String)> {
+        current()
+            .map(|t| t.layout.pois.iter().map(|p| (p.id.clone(), p.label.clone())).collect())
+            .unwrap_or_default()
+    };
+    // Who is already on the floor, as slots. An archived agent does not hold
+    // its personality: the whole point of archiving is to free the desk.
+    let aboard = move || -> Vec<String> {
+        let slots = archetypes.get();
+        roster
+            .get()
+            .iter()
+            .filter(|a| !a["archived"].as_bool().unwrap_or(false))
+            .filter_map(|a| a["id"].as_str().and_then(|id| slots.get(id).cloned()))
+            .collect()
+    };
+
+    // Picking a personality fills the form in with that character — their name,
+    // how they behave, and where they work. All of it stays editable: the
+    // choice is a starting point, not a lock.
+    let choose = move |slot: String| {
+        personality.set(slot.clone());
+        let Some(t) = current() else { return };
+        let Some(c) = t.cast.get(&slot) else {
+            // Random and Custom both start from a blank sheet.
+            name.set(String::new());
+            persona.set(String::new());
+            primary.set(String::new());
+            secondary.set(String::new());
+            return;
+        };
+        name.set(c.display.clone());
+        persona.set(c.personality.trait_line.clone());
+        primary.set(c.personality.primary_poi.clone());
+        secondary.set(c.personality.secondary_poi.clone());
+    };
 
     let reload = move || {
         leptos::task::spawn_local(async move {
@@ -98,10 +177,57 @@ fn Agents(
     });
 
     let hire = move |_| {
-        let (n, r, c, cmd, god) = (
+        let (mut n, r, c, cmd, god) = (
             name.get_untracked(), role.get_untracked(), cwd.get_untracked(),
             command.get_untracked(), is_god.get_untracked(),
         );
+        let (mut slot, mut line) = (String::new(), persona.get_untracked());
+        let (mut post, mut post2) = (primary.get_untracked(), secondary.get_untracked());
+
+        let choice = personality.get_untracked();
+        if choice != CUSTOM {
+            let Some(t) = current() else {
+                status.set("no theme to hire into".into());
+                return;
+            };
+            // Random draws from the personalities NOT already on the floor —
+            // the point of it is to fill the cast out, so handing back a second
+            // Kaylee would defeat it.
+            slot = if choice == RANDOM {
+                let used = aboard();
+                let free: Vec<&str> = theme::ARCHETYPES
+                    .iter()
+                    .copied()
+                    .filter(|a| t.cast.contains_key(*a) && !used.iter().any(|u| u == a))
+                    .collect();
+                if free.is_empty() {
+                    status.set(
+                        "every personality on this floor is already aboard — \
+                         pick one to double up, or write a custom one"
+                            .into(),
+                    );
+                    return;
+                }
+                free[spin() % free.len()].to_string()
+            } else {
+                choice
+            };
+            if let Some(ch) = t.cast.get(&slot) {
+                if n.trim().is_empty() {
+                    n = ch.display.clone();
+                }
+                if line.trim().is_empty() {
+                    line = ch.personality.trait_line.clone();
+                }
+                if post.trim().is_empty() {
+                    post = ch.personality.primary_poi.clone();
+                }
+                if post2.trim().is_empty() {
+                    post2 = ch.personality.secondary_poi.clone();
+                }
+            }
+        }
+
         if n.trim().is_empty() {
             status.set("an agent needs a name".into());
             return;
@@ -118,12 +244,27 @@ fn Agents(
                 "command": cmd,
                 "cwd": c,
                 "cols": 100, "rows": 30,
-                "hive": { "name": n, "role": r, "isGod": god },
+                "hive": {
+                    "name": n, "role": r, "isGod": god,
+                    // The chosen personality and posting travel with the spawn
+                    // and are stored on the registry entry, so they survive a
+                    // restart. Assigning them by ordering on every read would
+                    // re-roll somebody's choice the next time the floor changed.
+                    "archetype": slot, "persona": line,
+                    "primaryPoi": post, "secondaryPoi": post2,
+                },
             }]);
             match api::rpc("pty:spawn", opts).await {
                 Ok(v) if v["ok"] == true => {
                     status.set("hired".into());
+                    // Back to a blank sheet. Leaving the picker on the
+                    // character just hired means the next hire re-fills the
+                    // same name, derives the same id, and collides.
                     name.set(String::new());
+                    persona.set(String::new());
+                    personality.set(RANDOM.to_string());
+                    primary.set(String::new());
+                    secondary.set(String::new());
                     changed.update(|n| *n = n.wrapping_add(1));
                 }
                 Ok(v) => status.set(v["error"].as_str().unwrap_or("could not hire").to_string()),
@@ -153,6 +294,12 @@ fn Agents(
                     Some(json!({
                         "id": id,
                         "name": c.display,
+                        // Pinned, so the binding a recast produced stops
+                        // depending on the ordering that produced it: hiring a
+                        // tenth agent must not shuffle the nine already named.
+                        "archetype": arch,
+                        "primaryPoi": c.personality.primary_poi.clone(),
+                        "secondaryPoi": c.personality.secondary_poi.clone(),
                         // The character becomes part of the agent's identity, so
                         // a recast changes how it behaves and not just its name.
                         // The trait alone — the name is already the agent's, and
@@ -177,9 +324,97 @@ fn Agents(
         <div class="cfg-cols">
             <section>
                 <h3>"Hire an agent"</h3>
+
+                <label>"personality"</label>
+                <select on:change=move |e| choose(event_target_value(&e))>
+                    // Rebuilt whenever the theme or the roster changes: the
+                    // list is "who this floor could still be", and both of
+                    // those move it.
+                    {move || {
+                        let used = aboard();
+                        let picked = personality.get();
+                        let mut opts = vec![view! {
+                            <option value=RANDOM.to_string() selected=picked == RANDOM>
+                                {"Random — anyone not already aboard".to_string()}
+                            </option>
+                        }];
+                        opts.extend(cast_options().into_iter().map(|(slot, display, line)| {
+                            // Saying who is already here is what makes Random
+                            // legible, and stops a second Kaylee being a
+                            // surprise rather than a decision.
+                            let label = if used.contains(&slot) {
+                                format!("{display} · {line} (aboard)")
+                            } else {
+                                format!("{display} · {line}")
+                            };
+                            let sel = picked == slot;
+                            view! { <option value=slot selected=sel>{label}</option> }
+                        }));
+                        opts.push(view! {
+                            <option value=CUSTOM.to_string() selected=picked == CUSTOM>
+                                {"Custom — write your own".to_string()}
+                            </option>
+                        });
+                        opts
+                    }}
+                </select>
+
                 <label>"name"</label>
                 <input prop:value=move || name.get() placeholder="Dwight"
                        on:input=move |e| name.set(event_target_value(&e))/>
+
+                // Editable for a custom hire, and shown as written for a
+                // character — a trait line you cannot see is a setting you
+                // cannot check.
+                <Show when=move || personality.get() == CUSTOM>
+                    <label>"how they behave"</label>
+                    <input prop:value=move || persona.get()
+                           placeholder="Believes every rule is load-bearing."
+                           on:input=move |e| persona.set(event_target_value(&e))/>
+                </Show>
+                <Show when=move || personality.get() != CUSTOM && !persona.get().is_empty()>
+                    <p class="hint">{move || persona.get()}</p>
+                </Show>
+
+                <label>"where they work"</label>
+                <select on:change=move |e| primary.set(event_target_value(&e))>
+                    {move || {
+                        let picked = primary.get();
+                        let mut opts = vec![view! {
+                            <option value=String::new() selected=picked.is_empty()>
+                                {"their usual post".to_string()}
+                            </option>
+                        }];
+                        opts.extend(poi_options().into_iter().map(|(id, label)| {
+                            let sel = picked == id;
+                            view! { <option value=id selected=sel>{label}</option> }
+                        }));
+                        opts
+                    }}
+                </select>
+
+                <label>"and where else you\u{2019}ll find them"</label>
+                <select on:change=move |e| secondary.set(event_target_value(&e))>
+                    {move || {
+                        let picked = secondary.get();
+                        let mut opts = vec![view! {
+                            <option value=String::new() selected=picked.is_empty()>
+                                {"their usual haunt".to_string()}
+                            </option>
+                        }];
+                        opts.extend(poi_options().into_iter().map(|(id, label)| {
+                            let sel = picked == id;
+                            view! { <option value=id selected=sel>{label}</option> }
+                        }));
+                        opts
+                    }}
+                </select>
+                <p class="hint">
+                    "An agent idles at its post and turns up at the other when it wanders.
+                     Posts belong to the map, so switching themes moves everyone to the
+                     matching place on the new one rather than stranding them."
+                </p>
+
                 <label>"role"</label>
                 <input prop:value=move || role.get() placeholder="assistant to the regional manager"
                        on:input=move |e| role.set(event_target_value(&e))/>
