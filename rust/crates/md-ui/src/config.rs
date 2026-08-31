@@ -226,8 +226,19 @@ fn Agents(
         secondary.set(c.personality.secondary_poi.clone());
     };
 
+    // Who is actually running. The registry says who EXISTS; a stopped agent is
+    // still in it, and offering only "stop" for something already stopped left
+    // no way back to a running one.
+    let live = RwSignal::new(Vec::<String>::new());
     let reload = move || {
         leptos::task::spawn_local(async move {
+            if let Ok(v) = api::rpc("pty:list", json!([])).await {
+                live.set(
+                    v.as_array()
+                        .map(|a| a.iter().filter_map(|s| s["id"].as_str().map(String::from)).collect())
+                        .unwrap_or_default(),
+                );
+            }
             if let Ok(v) = api::rpc("hive:registry", json!([])).await {
                 let mut list: Vec<Value> = v["agents"]
                     .as_object()
@@ -555,7 +566,7 @@ fn Agents(
                         let (i1, i2, i3) = (id.clone(), id.clone(), id.clone());
                         let held = a["onHold"].as_bool().unwrap_or(false);
                         let archived = a["archived"].as_bool().unwrap_or(false);
-                        let mine = a.clone();
+                        let (mine, mine2) = (a.clone(), a.clone());
                         let now = a["provider"].as_str().unwrap_or("claude").to_string();
                         view! {
                             <div class="row">
@@ -623,13 +634,54 @@ fn Agents(
                                         changed.update(|n| *n = n.wrapping_add(1));
                                     });
                                 }>{if archived { "restore" } else { "archive" }}</button>
-                                <button class="ghost danger" on:click=move |_| {
-                                    let id = i3.clone();
-                                    leptos::task::spawn_local(async move {
-                                        let _ = api::rpc("pty:kill", json!([id])).await;
-                                        changed.update(|n| *n = n.wrapping_add(1));
+                                {
+                                    let a = mine2.clone();
+                                    // A Signal, not a closure: it is read in three
+                                    // places and a plain closure capturing the id
+                                    // moves into the first of them.
+                                    let running = Signal::derive(move || {
+                                        live.get().iter().any(|l| *l == i3)
                                     });
-                                }>"stop"</button>
+                                    view! {
+                                        <button class="ghost" class:danger=move || running.get()
+                                                on:click=move |_| {
+                                            let a = a.clone();
+                                            let id = a["id"].as_str().unwrap_or("").to_string();
+                                            if running.get_untracked() {
+                                                leptos::task::spawn_local(async move {
+                                                    let _ = api::rpc("pty:kill", json!([id])).await;
+                                                    changed.update(|n| *n = n.wrapping_add(1));
+                                                });
+                                                return;
+                                            }
+                                            status.set(format!("starting {id}…"));
+                                            leptos::task::spawn_local(async move {
+                                                let opts = json!([{
+                                                    "id": a["id"].as_str().unwrap_or(""),
+                                                    "cwd": a["cwd"].as_str().unwrap_or("~"),
+                                                    "cols": 100, "rows": 30,
+                                                    "resume": true,
+                                                    "hive": {
+                                                        "name": a["name"].as_str().unwrap_or(""),
+                                                        "role": a["role"].as_str().unwrap_or(""),
+                                                        "isGod": a["isGod"].as_bool().unwrap_or(false),
+                                                        "engine": a["provider"].as_str().unwrap_or("claude"),
+                                                        "archetype": a["archetype"].as_str().unwrap_or(""),
+                                                        "primaryPoi": a["primaryPoi"].as_str().unwrap_or(""),
+                                                        "secondaryPoi": a["secondaryPoi"].as_str().unwrap_or(""),
+                                                    },
+                                                }]);
+                                                match api::rpc("pty:spawn", opts).await {
+                                                    Ok(v) if v["ok"] == true => status.set("started".into()),
+                                                    Ok(v) => status.set(
+                                                        v["error"].as_str().unwrap_or("could not start").to_string()),
+                                                    Err(e) => status.set(e),
+                                                }
+                                                changed.update(|n| *n = n.wrapping_add(1));
+                                            });
+                                        }>{move || if running.get() { "stop" } else { "start" }}</button>
+                                    }
+                                }
                             </div>
                         }
                     }

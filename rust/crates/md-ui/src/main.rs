@@ -53,6 +53,9 @@ struct Agent {
     archetype: String,
     primary_poi: String,
     secondary_poi: String,
+    /// Enough to start it again: where it works and which CLI it runs.
+    cwd: String,
+    engine: String,
 }
 
 #[component]
@@ -192,6 +195,8 @@ fn App() -> impl IntoView {
                             archetype: a["archetype"].as_str().unwrap_or("").to_string(),
                             primary_poi: a["primaryPoi"].as_str().unwrap_or("").to_string(),
                             secondary_poi: a["secondaryPoi"].as_str().unwrap_or("").to_string(),
+                            cwd: a["cwd"].as_str().unwrap_or("~").to_string(),
+                            engine: a["provider"].as_str().unwrap_or("claude").to_string(),
                         })
                         .collect()
                 })
@@ -222,6 +227,39 @@ fn App() -> impl IntoView {
                 gloo_timers::future::TimeoutFuture::new(ROSTER_POLL_MS).await;
                 activity.update(|n| *n = n.wrapping_add(1));
             }
+        });
+    });
+
+    // Start the selected agent again.
+    //
+    // A restart of the server — or of the container it runs in — leaves every
+    // agent on the roster with no process, and until this there was no way back
+    // to one from the UI at all: the roster could stop an agent and never start
+    // it.
+    let start_selected = Callback::new(move |_| {
+        let Some(id) = selected.get_untracked() else { return };
+        let Some(a) = agents.get_untracked().into_iter().find(|a| a.id == id) else { return };
+        status.set(format!("starting {}…", a.name));
+        leptos::task::spawn_local(async move {
+            let opts = json!([{
+                "id": a.id,
+                "cwd": a.cwd,
+                "cols": 100, "rows": 30,
+                // Resumed, so an agent picks up the thread it was in rather
+                // than starting over with no idea what it was doing.
+                "resume": true,
+                "hive": {
+                    "name": a.name, "role": a.role, "isGod": a.is_god,
+                    "engine": a.engine, "archetype": a.archetype,
+                    "primaryPoi": a.primary_poi, "secondaryPoi": a.secondary_poi,
+                },
+            }]);
+            match api::rpc("pty:spawn", opts).await {
+                Ok(v) if v["ok"] == true => status.set(String::new()),
+                Ok(v) => status.set(v["error"].as_str().unwrap_or("could not start").to_string()),
+                Err(e) => status.set(e),
+            }
+            activity.update(|n| *n = n.wrapping_add(1));
         });
     });
 
@@ -264,7 +302,14 @@ fn App() -> impl IntoView {
                         {move || match pane.get().as_str() {
                             "files" => view! { <Editor root/> }.into_any(),
                             _ => view! {
-                                <Conversation agent=selected activity persona=Signal::derive(move || {
+                                <Conversation agent=selected activity
+                                    live=Signal::derive(move || {
+                                        selected.get()
+                                            .and_then(|id| agents.get().into_iter().find(|a| a.id == id))
+                                            .is_some_and(|a| a.live)
+                                    })
+                                    on_start=start_selected
+                                    persona=Signal::derive(move || {
                                     let id = selected.get()?;
                                     let themes = theme::builtin();
                                     let t = themes.get(theme.get() % themes.len().max(1))?;

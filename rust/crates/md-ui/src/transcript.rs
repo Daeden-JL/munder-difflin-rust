@@ -55,6 +55,12 @@ pub fn Conversation(
     /// Who the selected agent is dressed as, so the header can say something
     /// about them. Personality you can read, not only overhear on the floor.
     persona: Signal<Option<(String, String)>>,
+    /// Whether the selected agent has a process. A message goes to the agent's
+    /// terminal, so with no terminal there is nowhere for it to go — and that
+    /// is worth saying rather than discovering.
+    live: Signal<bool>,
+    /// Start the selected agent again.
+    on_start: Callback<()>,
 ) -> impl IntoView {
     // Carries an explicit sequence number: entries are append-only and never
     // change, so the index is a stable key and the list never re-renders what
@@ -125,12 +131,27 @@ pub fn Conversation(
         if text.trim().is_empty() {
             return;
         }
+        // Said before the attempt rather than after it. A message to an agent
+        // with no process cannot go anywhere, and the failure it produced was
+        // in-band and therefore invisible — which reads as the chat being
+        // broken rather than the agent being stopped.
+        if !live.get_untracked() {
+            error.set("This agent is not running. Start it, then send again.".into());
+            return;
+        }
         sending.set(true);
         leptos::task::spawn_local(async move {
             // A carriage return submits it, the same keystroke a person at the
             // terminal would send.
             let payload = json!([id, format!("{}\r", text)]);
             match api::rpc("pty:write", payload).await {
+                // `pty:write` reports failure IN BAND — `{ok:false, error}`
+                // inside a successful envelope — so treating any `Ok` as
+                // success swallowed every one of them and cleared the error
+                // line for good measure.
+                Ok(v) if v["ok"] == false => error.set(
+                    v["error"].as_str().unwrap_or("the message could not be delivered").to_string(),
+                ),
                 Ok(_) => error.set(String::new()),
                 Err(e) => error.set(e),
             }
@@ -170,7 +191,16 @@ pub fn Conversation(
                 <Show when=move || agent.get().is_none()>
                     <p class="empty">"Pick an agent."</p>
                 </Show>
-                <Show when=move || waiting.get() && entries.get().is_empty()>
+                // Three different empty states, and they used to be one. An
+                // agent with no process is not an agent that has yet to speak.
+                <Show when=move || agent.get().is_some() && !live.get()>
+                    <p class="empty">
+                        "This agent is not running. Everything it remembers is kept — start it
+                         and it picks up where it left off."
+                        <button on:click=move |_| on_start.run(())>"start this agent"</button>
+                    </p>
+                </Show>
+                <Show when=move || live.get() && waiting.get() && entries.get().is_empty()>
                     <p class="empty">
                         "Waiting for this agent to start a session. Type a task below to begin."
                     </p>
