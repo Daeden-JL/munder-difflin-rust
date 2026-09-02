@@ -270,6 +270,10 @@ header {
 .config .row.tool { align-items:flex-start; flex-wrap:wrap }
 /* An endpoint is longer than every other field on the row put together, so it
    gets the full width under it rather than a share of the line. */
+/* The model picker sits on its own line with the env box, not squeezed into
+   the row: a model id is as long as everything else on that line. */
+.config .row.tool .model { flex-basis:100%; display:flex; align-items:center; gap:.4rem; margin-top:.35rem }
+.config .row.tool .model select { flex:1 }
 .config textarea.envs { flex-basis:100%; width:100%; margin-top:.35rem;
   background:var(--bg); border:1px solid var(--line); border-radius:4px;
   padding:.35rem .5rem; font-family:ui-monospace,monospace; resize:vertical }

@@ -157,6 +157,7 @@ pub async fn build(cfg: &ServerConfig, accounts: Arc<accounts::Accounts>, sandbo
         .route("/api/mcp", get(mcp_catalog))
         .route("/api/engines", get(engine_catalog))
         .route("/api/engines/{id}/install", post(engine_install))
+        .route("/api/engines/{id}/models", get(engine_models))
         // Web-native, like /api/transcript: the Electron bridge had no recast
         // channel, and adding one to the generated enum would make the parity
         // numbers describe a contract that never existed.
@@ -477,6 +478,80 @@ async fn engine_catalog(
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_else(|| serde_json::json!({}));
     Json(serde_json::json!({ "engines": engines::view(&cfg) }))
+}
+
+/// The models an engine can run.
+///
+/// Two sources, and the live one wins where it exists: an engine pointed at a
+/// server is ASKED what it is serving, because a catalogue cannot know which
+/// model somebody loaded into LM Studio five minutes ago. Everything else falls
+/// back to the list the catalogue ships.
+async fn engine_models(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    auth::Tenant(tenant): auth::Tenant,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let cfg = state
+        .paths(&tenant)
+        .and_then(|p| std::fs::read_to_string(p.config_file()).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let Some(engine) = engines::resolve(&cfg, &id) else {
+        return Json(serde_json::json!({ "ok": false, "error": format!("no engine `{id}`") }));
+    };
+
+    // Any `*_BASE_URL` in the engine's environment is an OpenAI-wire endpoint by
+    // convention, and `GET {base}/models` is the one call that shape agrees on.
+    let base = engine
+        .env
+        .iter()
+        .find(|(k, _)| k.ends_with("_BASE_URL"))
+        .map(|(_, v)| v.trim_end_matches('/').to_string());
+
+    let Some(base) = base else {
+        return Json(serde_json::json!({
+            "ok": true, "source": "catalogue", "models": engine.models,
+        }));
+    };
+
+    let url = format!("{base}/models");
+    let fetched = reqwest::Client::new()
+        .get(&url)
+        // Short: this runs while somebody is looking at a dropdown, and a
+        // server that is not there should say so rather than hang the panel.
+        .timeout(std::time::Duration::from_secs(6))
+        .send()
+        .await;
+
+    match fetched {
+        Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
+            Ok(v) => {
+                let mut models: Vec<String> = v["data"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|m| m["id"].as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                models.sort();
+                Json(serde_json::json!({
+                    "ok": true,
+                    "source": if models.is_empty() { "catalogue" } else { "endpoint" },
+                    "models": if models.is_empty() { engine.models } else { models },
+                    "endpoint": url,
+                }))
+            }
+            Err(e) => Json(serde_json::json!({
+                "ok": false, "models": engine.models,
+                "error": format!("{url} did not answer with JSON: {e}"),
+            })),
+        },
+        Ok(r) => Json(serde_json::json!({
+            "ok": false, "models": engine.models,
+            "error": format!("{url} answered {}", r.status()),
+        })),
+        Err(e) => Json(serde_json::json!({
+            "ok": false, "models": engine.models,
+            "error": format!("could not reach {url}: {e}"),
+        })),
+    }
 }
 
 /// How long an install is given before it is abandoned.

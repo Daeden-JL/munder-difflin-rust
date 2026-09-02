@@ -2095,6 +2095,12 @@ fn pty_spawn(ctx: &Ctx) -> RpcResponse {
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .or_else(|| engine.as_ref().map(|e| e.args.clone()))
         .unwrap_or_default();
+    if let Some(e) = &engine {
+        if !e.model.trim().is_empty() && !e.model_flag.is_empty() {
+            args.push(e.model_flag.clone());
+            args.push(e.model.clone());
+        }
+    }
     let cols = opts.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
     let rows = opts.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
 
@@ -2107,6 +2113,12 @@ fn pty_spawn(ctx: &Ctx) -> RpcResponse {
     if let Some(e) = &engine {
         for (k, v) in &e.env {
             env.insert(k.clone(), v.clone());
+        }
+        // The chosen model, however this CLI takes it. Applied after the
+        // engine's own environment so a model picked in the panel wins over one
+        // left in the env box.
+        if !e.model.trim().is_empty() && !e.model_env.is_empty() {
+            env.insert(e.model_env.clone(), e.model.clone());
         }
     }
 

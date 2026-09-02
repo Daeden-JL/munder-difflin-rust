@@ -40,6 +40,18 @@ pub struct Builtin {
     /// and nothing else. Values are overridable per floor, because the whole
     /// point of a base URL is that it is yours.
     pub env: &'static [(&'static str, &'static str)],
+    /// How a model is chosen: a flag on the command line, an environment
+    /// variable, or neither.
+    ///
+    /// Both exist because CLIs are split on it — Claude Code takes `--model`,
+    /// while anything on the OpenAI wire reads `OPENAI_MODEL`. An engine that
+    /// names neither has no model to pick and gets no picker.
+    pub model_flag: &'static str,
+    pub model_env: &'static str,
+    /// Models the catalogue knows. A starting list, not a limit: the panel
+    /// takes a typed-in name, and an engine backed by a server is asked what it
+    /// is actually serving.
+    pub models: &'static [&'static str],
     /// How to install it, if the catalogue knows. Run by an operator from the
     /// engines panel, never by an agent.
     ///
@@ -65,70 +77,76 @@ pub const CATALOG: &[Builtin] = &[
         id: "claude", label: "Claude Code",
         description: "Anthropic's CLI. Reports every tool call, so the floor \
                       shows what it is doing.",
-        command: "claude", args: &[], hooks: true, install: "npm install -g @anthropic-ai/claude-code", env: &[],
+        command: "claude", args: &[], hooks: true,
+        install: "npm install -g @anthropic-ai/claude-code", env: &[],
+        model_flag: "--model", model_env: "",
+        // Aliases first: they keep pointing at the current model of that tier,
+        // where a pinned id goes stale on the next release.
+        models: &["opus", "sonnet", "haiku",
+                  "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
     },
     Builtin {
         id: "codex", label: "Codex · GPT",
         description: "OpenAI's coding CLI. Runs, but is quiet on the floor.",
-        command: "codex", args: &[], hooks: false, install: "npm install -g @openai/codex", env: &[],
+        command: "codex", args: &[], hooks: false, install: "npm install -g @openai/codex", env: &[], model_flag: "", model_env: "", models: &[],
     },
     Builtin {
         id: "gemini", label: "Gemini CLI",
         description: "Google's coding CLI. Runs, but is quiet on the floor.",
-        command: "gemini", args: &[], hooks: false, install: "npm install -g @google/gemini-cli", env: &[],
+        command: "gemini", args: &[], hooks: false, install: "npm install -g @google/gemini-cli", env: &[], model_flag: "", model_env: "", models: &[],
     },
     Builtin {
         id: "antigravity", label: "Antigravity · Gemini",
         description: "Antigravity's agent CLI, on Gemini models. Quiet on the floor.",
-        command: "agy", args: &[], hooks: false, install: "", env: &[],
+        command: "agy", args: &[], hooks: false, install: "", env: &[], model_flag: "", model_env: "", models: &[],
     },
     Builtin {
         id: "grok", label: "Grok · xAI",
         description: "xAI's coding CLI. Quiet on the floor.",
-        command: "grok", args: &[], hooks: false, install: "", env: &[],
+        command: "grok", args: &[], hooks: false, install: "", env: &[], model_flag: "", model_env: "", models: &[],
     },
     Builtin {
         id: "kimi", label: "Kimi Code",
         description: "Moonshot's coding CLI. Quiet on the floor, and takes no \
                       inbox mail — work reaches it typed into its prompt.",
-        command: "kimi", args: &[], hooks: false, install: "", env: &[],
+        command: "kimi", args: &[], hooks: false, install: "", env: &[], model_flag: "", model_env: "", models: &[],
     },
     Builtin {
         id: "qwen", label: "Qwen Code",
         description: "Alibaba's coding CLI. Quiet on the floor.",
-        command: "qwen", args: &[], hooks: false, install: "npm install -g @qwen-code/qwen-code", env: &[],
+        command: "qwen", args: &[], hooks: false, install: "npm install -g @qwen-code/qwen-code", env: &[], model_flag: "", model_env: "", models: &[],
     },
     Builtin {
         id: "opencode", label: "OpenCode",
         description: "The open-source terminal agent. Quiet on the floor.",
-        command: "opencode", args: &[], hooks: false, install: "npm install -g opencode-ai", env: &[],
+        command: "opencode", args: &[], hooks: false, install: "npm install -g opencode-ai", env: &[], model_flag: "", model_env: "", models: &[],
     },
     Builtin {
         id: "crush", label: "Crush · Charm",
         description: "Charm's terminal agent. Quiet on the floor.",
-        command: "crush", args: &[], hooks: false, install: "", env: &[],
+        command: "crush", args: &[], hooks: false, install: "", env: &[], model_flag: "", model_env: "", models: &[],
     },
     Builtin {
         id: "pi", label: "Pi",
         description: "The Pi coding CLI. Quiet on the floor.",
-        command: "pi", args: &[], hooks: false, install: "", env: &[],
+        command: "pi", args: &[], hooks: false, install: "", env: &[], model_flag: "", model_env: "", models: &[],
     },
     Builtin {
         id: "copilot", label: "Copilot",
         description: "GitHub Copilot's CLI. Quiet on the floor, and takes no \
                       inbox mail — work reaches it typed into its prompt.",
-        command: "copilot", args: &[], hooks: false, install: "npm install -g @github/copilot", env: &[],
+        command: "copilot", args: &[], hooks: false, install: "npm install -g @github/copilot", env: &[], model_flag: "", model_env: "", models: &[],
     },
     Builtin {
         id: "cursor", label: "Cursor",
         description: "Cursor's headless agent. Quiet on the floor.",
-        command: "cursor-agent", args: &[], hooks: false, install: "", env: &[],
+        command: "cursor-agent", args: &[], hooks: false, install: "", env: &[], model_flag: "", model_env: "", models: &[],
     },
     Builtin {
         id: "ollama", label: "Ollama",
         description: "A model running on this machine. Set which one in the \
                       arguments.",
-        command: "ollama", args: &["run", "llama3.2"], hooks: false, install: "", env: &[],
+        command: "ollama", args: &["run", "llama3.2"], hooks: false, install: "", env: &[], model_flag: "", model_env: "", models: &[],
     },
     Builtin {
         id: "lmstudio", label: "LM Studio (remote)",
@@ -151,11 +169,14 @@ pub const CATALOG: &[Builtin] = &[
             ("OPENAI_API_KEY", "lm-studio"),
             ("OPENAI_MODEL", "local-model"),
         ],
+        // The model list comes from the server itself — LM Studio serves
+        // whatever is loaded, which is not something a catalogue can know.
+        model_flag: "", model_env: "OPENAI_MODEL", models: &[],
     },
     Builtin {
         id: "shell", label: "Plain shell",
         description: "A bare shell, for looking around a workspace. Not an agent.",
-        command: "bash", args: &[], hooks: false, install: "", env: &[],
+        command: "bash", args: &[], hooks: false, install: "", env: &[], model_flag: "", model_env: "", models: &[],
     },
 ];
 
@@ -171,6 +192,11 @@ pub struct Engine {
     pub hooks: bool,
     pub install: String,
     pub env: BTreeMap<String, String>,
+    pub model_flag: String,
+    pub model_env: String,
+    pub models: Vec<String>,
+    /// The chosen one. Empty means the CLI's own default.
+    pub model: String,
     /// Whether the catalogue ships it. A built-in can be edited and hidden but
     /// never deleted — the definition would come back on the next release and
     /// the "deletion" would look like a bug.
@@ -197,6 +223,10 @@ impl Engine {
             hooks: b.hooks,
             install: b.install.into(),
             env: b.env.iter().map(|(k, v)| ((*k).to_string(), (*v).to_string())).collect(),
+            model_flag: b.model_flag.into(),
+            model_env: b.model_env.into(),
+            models: b.models.iter().map(|m| (*m).to_string()).collect(),
+            model: String::new(),
             builtin: true,
         }
     }
@@ -221,6 +251,18 @@ impl Engine {
         }
         if let Some(v) = over.get("install").and_then(|v| v.as_str()) {
             self.install = v.into();
+        }
+        if let Some(v) = over.get("modelFlag").and_then(|v| v.as_str()) {
+            self.model_flag = v.into();
+        }
+        if let Some(v) = over.get("modelEnv").and_then(|v| v.as_str()) {
+            self.model_env = v.into();
+        }
+        if let Some(v) = strings(over.get("models")) {
+            self.models = v;
+        }
+        if let Some(v) = over.get("model").and_then(|v| v.as_str()) {
+            self.model = v.into();
         }
         // MERGED, not replaced: overriding the base URL of a built-in should
         // not silently drop the API key that goes with it.
@@ -287,6 +329,10 @@ pub fn all(config: &Value) -> Vec<Engine> {
                 env: v.get("env").and_then(|e| e.as_object()).map(|m| {
                     m.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect()
                 }).unwrap_or_default(),
+                model_flag: v.get("modelFlag").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                model_env: v.get("modelEnv").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                models: strings(v.get("models")).unwrap_or_default(),
+                model: v.get("model").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                 builtin: false,
             });
         }
@@ -336,6 +382,13 @@ pub fn view(config: &Value) -> Value {
             "hooks": e.hooks,
             "install": e.install,
             "env": e.env,
+            "modelFlag": e.model_flag,
+            "modelEnv": e.model_env,
+            "models": e.models,
+            "model": e.model,
+            // Whether this engine has a model to choose at all — the panel
+            // shows a picker on exactly these.
+            "picksModel": !(e.model_flag.is_empty() && e.model_env.is_empty()),
             "builtin": e.builtin,
             "available": available(&e.command),
         }))
@@ -492,6 +545,52 @@ mod tests {
         for id in ["claude", "codex", "gemini", "shell"] {
             assert!(resolve(&json!({}), id).unwrap().env.is_empty(), "{id}");
         }
+    }
+
+    /// A model is passed the way its CLI takes it — a flag for Claude Code, an
+    /// environment variable for anything on the OpenAI wire. An engine that
+    /// names neither has nothing to pick.
+    #[test]
+    fn an_engine_says_how_it_takes_a_model() {
+        let claude = resolve(&json!({}), "claude").unwrap();
+        assert_eq!(claude.model_flag, "--model");
+        assert!(claude.model_env.is_empty());
+        // Aliases first: they track the current model of each tier, where a
+        // pinned id goes stale on the next release.
+        assert_eq!(claude.models.first().map(String::as_str), Some("opus"));
+        assert!(claude.models.iter().any(|m| m == "claude-opus-5"));
+
+        let lm = resolve(&json!({}), "lmstudio").unwrap();
+        assert_eq!(lm.model_env, "OPENAI_MODEL");
+        assert!(lm.model_flag.is_empty());
+        // Nothing shipped: LM Studio serves whatever was loaded into it, which
+        // is a question for the server, not for this file.
+        assert!(lm.models.is_empty());
+
+        assert!(resolve(&json!({}), "shell").unwrap().model_flag.is_empty());
+    }
+
+    #[test]
+    fn a_tenant_can_choose_a_model_and_supply_its_own_list() {
+        let cfg = json!({ "engines": {
+            "claude": { "model": "sonnet" },
+            "lmstudio": { "models": ["qwen2.5-coder-7b"], "model": "qwen2.5-coder-7b" },
+        }});
+        assert_eq!(resolve(&cfg, "claude").unwrap().model, "sonnet");
+        let lm = resolve(&cfg, "lmstudio").unwrap();
+        assert_eq!(lm.models, vec!["qwen2.5-coder-7b"]);
+        assert_eq!(lm.model, "qwen2.5-coder-7b");
+    }
+
+    /// The panel shows a picker on exactly the engines that have one.
+    #[test]
+    fn the_view_says_which_engines_pick_a_model() {
+        let v = view(&json!({}));
+        let rows = v.as_array().unwrap();
+        let picks = |id: &str| rows.iter().find(|r| r["id"] == id).unwrap()["picksModel"] == true;
+        assert!(picks("claude"));
+        assert!(picks("lmstudio"));
+        assert!(!picks("shell"));
     }
 
     #[test]

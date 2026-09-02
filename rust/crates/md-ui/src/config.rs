@@ -830,11 +830,19 @@ fn Engines(status: RwSignal<String>) -> impl IntoView {
                 <For each=move || list.get() key=|e| e["id"].as_str().unwrap_or("").to_string() let:e>
                     {
                         let id = e["id"].as_str().unwrap_or("").to_string();
-                        let (i1, i2) = (id.clone(), id.clone());
+                        let (i1, i2, i3) = (id.clone(), id.clone(), id.clone());
                         let builtin = e["builtin"].as_bool().unwrap_or(false);
                         let hooks = e["hooks"].as_bool().unwrap_or(false);
                         let ok = e["available"].as_bool().unwrap_or(false);
                         let installable = !e["install"].as_str().unwrap_or("").trim().is_empty();
+                        let picks_model = e["picksModel"].as_bool().unwrap_or(false);
+                        let model = RwSignal::new(e["model"].as_str().unwrap_or("").to_string());
+                        // Seeded from the catalogue, replaced by whatever the
+                        // engine's own server says it is serving.
+                        let choices = RwSignal::new(
+                            e["models"].as_array().map(|a| a.iter()
+                                .filter_map(|m| m.as_str().map(String::from)).collect::<Vec<_>>())
+                                .unwrap_or_default());
                         let recipe = e["install"].as_str().unwrap_or("").to_string();
                         let cmd = RwSignal::new(e["command"].as_str().unwrap_or("").to_string());
                         // The engine's environment, as editable KEY=value lines.
@@ -850,7 +858,6 @@ fn Engines(status: RwSignal<String>) -> impl IntoView {
                                 rows.join("\n")
                             }).unwrap_or_default(),
                         );
-                        let has_env = !e["env"].as_object().map(|m| m.is_empty()).unwrap_or(true);
                         let argv = RwSignal::new(
                             e["args"].as_array().map(|a| a.iter()
                                 .filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" "))
@@ -911,6 +918,7 @@ fn Engines(status: RwSignal<String>) -> impl IntoView {
                                         ("command", json!(cmd.get_untracked())),
                                         ("args", json!(args_of(&argv.get_untracked()))),
                                         ("env", json!(env_of(&envs.get_untracked()))),
+                                        ("model", json!(model.get_untracked())),
                                     ]);
                                 }>"save"</button>
                                 // A built-in is hidden rather than deleted: its
@@ -926,11 +934,64 @@ fn Engines(status: RwSignal<String>) -> impl IntoView {
                                 // Below the row, not in it: an endpoint is
                                 // longer than everything else on the line put
                                 // together.
-                                <Show when=move || has_env || !envs.get().is_empty()>
-                                    <textarea class="envs" rows="3"
-                                              placeholder="OPENAI_BASE_URL=http://host:1234/v1"
-                                              prop:value=move || envs.get()
-                                              on:input=move |ev| envs.set(event_target_value(&ev))/>
+                                <textarea class="envs" rows="2"
+                                          placeholder="KEY=value, one per line"
+                                          prop:value=move || envs.get()
+                                          on:input=move |ev| envs.set(event_target_value(&ev))/>
+                                // Only on engines that have a model to pick.
+                                // A dropdown beside an engine with one model is
+                                // a control that does nothing.
+                                <Show when=move || picks_model>
+                                    {
+                                        let id = i3.clone();
+                                        view! {
+                                            <span class="model">
+                                                <select on:change=move |ev| model.set(event_target_value(&ev))>
+                                                    {move || {
+                                                        let picked = model.get();
+                                                        let mut opts = vec![view! {
+                                                            <option value=String::new() selected=picked.is_empty()>
+                                                                {"the CLI\u{2019}s default".to_string()}
+                                                            </option>
+                                                        }];
+                                                        opts.extend(choices.get().into_iter().map(|m| {
+                                                            let sel = picked == m;
+                                                            let label = m.clone();
+                                                            view! { <option value=m selected=sel>{label}</option> }
+                                                        }));
+                                                        opts
+                                                    }}
+                                                </select>
+                                                // A model list is only as good as
+                                                // the machine serving it, so ask
+                                                // rather than ship a guess.
+                                                <button class="ghost" on:click=move |_| {
+                                                    let id = id.clone();
+                                                    status.set(format!("asking {id} what it serves…"));
+                                                    leptos::task::spawn_local(async move {
+                                                        let path = format!("/api/engines/{id}/models");
+                                                        match api::get_json(&path).await {
+                                                            Ok(v) => {
+                                                                let found: Vec<String> = v["models"].as_array()
+                                                                    .map(|a| a.iter().filter_map(|m| m.as_str()
+                                                                        .map(String::from)).collect())
+                                                                    .unwrap_or_default();
+                                                                let n = found.len();
+                                                                choices.set(found);
+                                                                status.set(match v["source"].as_str() {
+                                                                    Some("endpoint") => format!("{n} models on that server"),
+                                                                    _ => v["error"].as_str()
+                                                                        .map(String::from)
+                                                                        .unwrap_or_else(|| format!("{n} known models")),
+                                                                });
+                                                            }
+                                                            Err(e) => status.set(e),
+                                                        }
+                                                    });
+                                                }>"refresh"</button>
+                                            </span>
+                                        }
+                                    }
                                 </Show>
                             </div>
                         }
