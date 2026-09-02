@@ -19,6 +19,7 @@
 //! something the catalogue has never heard of — which is the point, because the
 //! set of coding CLIs changes faster than this file does.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde_json::{json, Value};
@@ -32,6 +33,13 @@ pub struct Builtin {
     pub args: &'static [&'static str],
     /// Speaks Claude Code's hook and settings protocol.
     pub hooks: bool,
+    /// Environment every agent on this engine gets.
+    ///
+    /// What makes a REMOTE model server expressible at all: an OpenAI-wire CLI
+    /// is pointed at one by its base URL, and until now an engine was a command
+    /// and nothing else. Values are overridable per floor, because the whole
+    /// point of a base URL is that it is yours.
+    pub env: &'static [(&'static str, &'static str)],
     /// How to install it, if the catalogue knows. Run by an operator from the
     /// engines panel, never by an agent.
     ///
@@ -57,75 +65,97 @@ pub const CATALOG: &[Builtin] = &[
         id: "claude", label: "Claude Code",
         description: "Anthropic's CLI. Reports every tool call, so the floor \
                       shows what it is doing.",
-        command: "claude", args: &[], hooks: true, install: "npm install -g @anthropic-ai/claude-code",
+        command: "claude", args: &[], hooks: true, install: "npm install -g @anthropic-ai/claude-code", env: &[],
     },
     Builtin {
         id: "codex", label: "Codex · GPT",
         description: "OpenAI's coding CLI. Runs, but is quiet on the floor.",
-        command: "codex", args: &[], hooks: false, install: "npm install -g @openai/codex",
+        command: "codex", args: &[], hooks: false, install: "npm install -g @openai/codex", env: &[],
     },
     Builtin {
         id: "gemini", label: "Gemini CLI",
         description: "Google's coding CLI. Runs, but is quiet on the floor.",
-        command: "gemini", args: &[], hooks: false, install: "npm install -g @google/gemini-cli",
+        command: "gemini", args: &[], hooks: false, install: "npm install -g @google/gemini-cli", env: &[],
     },
     Builtin {
         id: "antigravity", label: "Antigravity · Gemini",
         description: "Antigravity's agent CLI, on Gemini models. Quiet on the floor.",
-        command: "agy", args: &[], hooks: false, install: "",
+        command: "agy", args: &[], hooks: false, install: "", env: &[],
     },
     Builtin {
         id: "grok", label: "Grok · xAI",
         description: "xAI's coding CLI. Quiet on the floor.",
-        command: "grok", args: &[], hooks: false, install: "",
+        command: "grok", args: &[], hooks: false, install: "", env: &[],
     },
     Builtin {
         id: "kimi", label: "Kimi Code",
         description: "Moonshot's coding CLI. Quiet on the floor, and takes no \
                       inbox mail — work reaches it typed into its prompt.",
-        command: "kimi", args: &[], hooks: false, install: "",
+        command: "kimi", args: &[], hooks: false, install: "", env: &[],
     },
     Builtin {
         id: "qwen", label: "Qwen Code",
         description: "Alibaba's coding CLI. Quiet on the floor.",
-        command: "qwen", args: &[], hooks: false, install: "npm install -g @qwen-code/qwen-code",
+        command: "qwen", args: &[], hooks: false, install: "npm install -g @qwen-code/qwen-code", env: &[],
     },
     Builtin {
         id: "opencode", label: "OpenCode",
         description: "The open-source terminal agent. Quiet on the floor.",
-        command: "opencode", args: &[], hooks: false, install: "npm install -g opencode-ai",
+        command: "opencode", args: &[], hooks: false, install: "npm install -g opencode-ai", env: &[],
     },
     Builtin {
         id: "crush", label: "Crush · Charm",
         description: "Charm's terminal agent. Quiet on the floor.",
-        command: "crush", args: &[], hooks: false, install: "",
+        command: "crush", args: &[], hooks: false, install: "", env: &[],
     },
     Builtin {
         id: "pi", label: "Pi",
         description: "The Pi coding CLI. Quiet on the floor.",
-        command: "pi", args: &[], hooks: false, install: "",
+        command: "pi", args: &[], hooks: false, install: "", env: &[],
     },
     Builtin {
         id: "copilot", label: "Copilot",
         description: "GitHub Copilot's CLI. Quiet on the floor, and takes no \
                       inbox mail — work reaches it typed into its prompt.",
-        command: "copilot", args: &[], hooks: false, install: "npm install -g @github/copilot",
+        command: "copilot", args: &[], hooks: false, install: "npm install -g @github/copilot", env: &[],
     },
     Builtin {
         id: "cursor", label: "Cursor",
         description: "Cursor's headless agent. Quiet on the floor.",
-        command: "cursor-agent", args: &[], hooks: false, install: "",
+        command: "cursor-agent", args: &[], hooks: false, install: "", env: &[],
     },
     Builtin {
         id: "ollama", label: "Ollama",
         description: "A model running on this machine. Set which one in the \
                       arguments.",
-        command: "ollama", args: &["run", "llama3.2"], hooks: false, install: "",
+        command: "ollama", args: &["run", "llama3.2"], hooks: false, install: "", env: &[],
+    },
+    Builtin {
+        id: "lmstudio", label: "LM Studio (remote)",
+        description: "A model served by LM Studio on another machine. LM Studio is \
+                      not an agent — this runs Qwen Code against its OpenAI-compatible \
+                      endpoint, so set the address and model below to your server's.",
+        // LM Studio speaks the OpenAI wire, so the engine is an OpenAI-wire CLI
+        // pointed at it. Qwen Code is the one in this catalogue that takes its
+        // endpoint from the environment; OpenCode and Crush want a config file
+        // written per agent, which is a bigger surface and a version-specific
+        // one.
+        command: "qwen", args: &[], hooks: false,
+        install: "npm install -g @qwen-code/qwen-code",
+        // The defaults are LM Studio's own, with the host left as localhost —
+        // a placeholder address would be a broken engine, and this one at least
+        // works if you happen to be running it alongside the server.
+        env: &[
+            ("OPENAI_BASE_URL", "http://localhost:1234/v1"),
+            // LM Studio ignores the key but the client insists on one.
+            ("OPENAI_API_KEY", "lm-studio"),
+            ("OPENAI_MODEL", "local-model"),
+        ],
     },
     Builtin {
         id: "shell", label: "Plain shell",
         description: "A bare shell, for looking around a workspace. Not an agent.",
-        command: "bash", args: &[], hooks: false, install: "",
+        command: "bash", args: &[], hooks: false, install: "", env: &[],
     },
 ];
 
@@ -140,6 +170,7 @@ pub struct Engine {
     pub args: Vec<String>,
     pub hooks: bool,
     pub install: String,
+    pub env: BTreeMap<String, String>,
     /// Whether the catalogue ships it. A built-in can be edited and hidden but
     /// never deleted — the definition would come back on the next release and
     /// the "deletion" would look like a bug.
@@ -165,6 +196,7 @@ impl Engine {
             args: b.args.iter().map(|a| (*a).to_string()).collect(),
             hooks: b.hooks,
             install: b.install.into(),
+            env: b.env.iter().map(|(k, v)| ((*k).to_string(), (*v).to_string())).collect(),
             builtin: true,
         }
     }
@@ -189,6 +221,18 @@ impl Engine {
         }
         if let Some(v) = over.get("install").and_then(|v| v.as_str()) {
             self.install = v.into();
+        }
+        // MERGED, not replaced: overriding the base URL of a built-in should
+        // not silently drop the API key that goes with it.
+        if let Some(m) = over.get("env").and_then(|v| v.as_object()) {
+            for (k, v) in m {
+                match v.as_str() {
+                    Some(s) => { self.env.insert(k.clone(), s.to_string()); }
+                    // An explicit null removes one the built-in set.
+                    None if v.is_null() => { self.env.remove(k); }
+                    None => {}
+                }
+            }
         }
     }
 }
@@ -240,6 +284,9 @@ pub fn all(config: &Value) -> Vec<Engine> {
                 args: strings(v.get("args")).unwrap_or_default(),
                 hooks: v.get("hooks").and_then(|h| h.as_bool()).unwrap_or(false),
                 install: v.get("install").and_then(|i| i.as_str()).unwrap_or("").to_string(),
+                env: v.get("env").and_then(|e| e.as_object()).map(|m| {
+                    m.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect()
+                }).unwrap_or_default(),
                 builtin: false,
             });
         }
@@ -288,6 +335,7 @@ pub fn view(config: &Value) -> Value {
             "args": e.args,
             "hooks": e.hooks,
             "install": e.install,
+            "env": e.env,
             "builtin": e.builtin,
             "available": available(&e.command),
         }))
@@ -391,6 +439,59 @@ mod tests {
         let v = view(&cfg);
         let row = v.as_array().unwrap().iter().find(|r| r["id"] == "mine").unwrap();
         assert_eq!(row["install"], "cargo install my-agent");
+    }
+
+    /// LM Studio is a SERVER, not an agent, so the engine is an OpenAI-wire CLI
+    /// aimed at it. What makes it usable is that the address is data.
+    #[test]
+    fn the_lm_studio_engine_points_a_cli_at_an_endpoint_you_can_move() {
+        let e = resolve(&json!({}), "lmstudio").unwrap();
+        assert_eq!(e.command, "qwen", "LM Studio does not run agents; something else does");
+        assert_eq!(e.env["OPENAI_BASE_URL"], "http://localhost:1234/v1");
+        assert!(!e.hooks, "nothing but Claude Code reports to the floor");
+
+        // Pointing it at another machine is one field, and the key and model
+        // that came with it survive.
+        let cfg = json!({ "engines": { "lmstudio": {
+            "env": { "OPENAI_BASE_URL": "http://192.168.1.50:1234/v1" }
+        }}});
+        let e = resolve(&cfg, "lmstudio").unwrap();
+        assert_eq!(e.env["OPENAI_BASE_URL"], "http://192.168.1.50:1234/v1");
+        assert_eq!(e.env["OPENAI_API_KEY"], "lm-studio", "a merge, not a replacement");
+        assert_eq!(e.env["OPENAI_MODEL"], "local-model");
+    }
+
+    /// An override merges; only an explicit null removes. Replacing the map
+    /// wholesale would mean changing an address silently dropped the key that
+    /// went with it, and the failure would look like the server being down.
+    #[test]
+    fn engine_environment_merges_and_a_null_removes() {
+        let cfg = json!({ "engines": { "lmstudio": {
+            "env": { "OPENAI_MODEL": null, "EXTRA": "1" }
+        }}});
+        let e = resolve(&cfg, "lmstudio").unwrap();
+        assert!(!e.env.contains_key("OPENAI_MODEL"));
+        assert_eq!(e.env["EXTRA"], "1");
+        assert_eq!(e.env["OPENAI_BASE_URL"], "http://localhost:1234/v1");
+    }
+
+    /// A registered engine gets an environment too — the same mechanism, so
+    /// pointing your own CLI at your own server needs no new concept.
+    #[test]
+    fn a_registered_engine_can_carry_its_own_environment() {
+        let cfg = json!({ "engines": { "mine": {
+            "command": "my-agent", "env": { "MY_BASE_URL": "http://box:8080" }
+        }}});
+        assert_eq!(resolve(&cfg, "mine").unwrap().env["MY_BASE_URL"], "http://box:8080");
+    }
+
+    /// Everything else carries none, so adding the field changed no existing
+    /// engine's behaviour.
+    #[test]
+    fn engines_that_need_no_environment_have_none() {
+        for id in ["claude", "codex", "gemini", "shell"] {
+            assert!(resolve(&json!({}), id).unwrap().env.is_empty(), "{id}");
+        }
     }
 
     #[test]

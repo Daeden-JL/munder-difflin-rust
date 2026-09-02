@@ -837,6 +837,20 @@ fn Engines(status: RwSignal<String>) -> impl IntoView {
                         let installable = !e["install"].as_str().unwrap_or("").trim().is_empty();
                         let recipe = e["install"].as_str().unwrap_or("").to_string();
                         let cmd = RwSignal::new(e["command"].as_str().unwrap_or("").to_string());
+                        // The engine's environment, as editable KEY=value lines.
+                        // This is where a remote model server's address lives,
+                        // so it has to be reachable without hand-editing a
+                        // config file on the server.
+                        let envs = RwSignal::new(
+                            e["env"].as_object().map(|m| {
+                                let mut rows: Vec<String> = m.iter()
+                                    .filter_map(|(k, v)| v.as_str().map(|v| format!("{k}={v}")))
+                                    .collect();
+                                rows.sort();
+                                rows.join("\n")
+                            }).unwrap_or_default(),
+                        );
+                        let has_env = !e["env"].as_object().map(|m| m.is_empty()).unwrap_or(true);
                         let argv = RwSignal::new(
                             e["args"].as_array().map(|a| a.iter()
                                 .filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" "))
@@ -896,6 +910,7 @@ fn Engines(status: RwSignal<String>) -> impl IntoView {
                                     patch(i1.clone(), vec![
                                         ("command", json!(cmd.get_untracked())),
                                         ("args", json!(args_of(&argv.get_untracked()))),
+                                        ("env", json!(env_of(&envs.get_untracked()))),
                                     ]);
                                 }>"save"</button>
                                 // A built-in is hidden rather than deleted: its
@@ -908,10 +923,26 @@ fn Engines(status: RwSignal<String>) -> impl IntoView {
                                         forget(i2.clone());
                                     }
                                 }>{if builtin { "hide" } else { "remove" }}</button>
+                                // Below the row, not in it: an endpoint is
+                                // longer than everything else on the line put
+                                // together.
+                                <Show when=move || has_env || !envs.get().is_empty()>
+                                    <textarea class="envs" rows="3"
+                                              placeholder="OPENAI_BASE_URL=http://host:1234/v1"
+                                              prop:value=move || envs.get()
+                                              on:input=move |ev| envs.set(event_target_value(&ev))/>
+                                </Show>
                             </div>
                         }
                     }
                 </For>
+                <p class="hint">
+                    "An engine\u{2019}s environment is how a CLI is told which model server to
+                     talk to \u{2014} point LM Studio at another machine by changing its
+                     "<code>"OPENAI_BASE_URL"</code>" to that host. It is stored in this
+                     floor\u{2019}s configuration in plain text, so put an endpoint here and a
+                     real API key somewhere else."
+                </p>
                 <p class="hint">
                     "Installing puts the command where your agents look for it, and it stays
                      there across rebuilds \u{2014} it lands in this floor\u{2019}s data, not in the
@@ -939,6 +970,19 @@ fn Engines(status: RwSignal<String>) -> impl IntoView {
             </section>
         </div>
     }
+}
+
+/// `KEY=value` lines as an environment map.
+///
+/// Whitespace around either side is dropped, blank lines are ignored, and a
+/// line with no `=` is skipped rather than becoming a variable with an empty
+/// name — a typo should lose one line, not the whole block.
+fn env_of(s: &str) -> serde_json::Map<String, Value> {
+    s.lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.trim().to_string(), json!(v.trim())))
+        .filter(|(k, _)| !k.is_empty())
+        .collect()
 }
 
 /// A command line as a list of arguments. Whitespace-split, deliberately: an

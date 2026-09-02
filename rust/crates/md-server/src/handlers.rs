@@ -2101,6 +2101,14 @@ fn pty_spawn(ctx: &Ctx) -> RpcResponse {
     let mut env = std::collections::HashMap::new();
     env.insert("TERM".to_string(), "xterm-256color".to_string());
     env.insert("HOME".to_string(), ctx.paths.home().display().to_string());
+    // The engine's own environment: how a CLI is told which model server to
+    // talk to. Before the hive injection, so an engine can never shadow
+    // AGENT_ID or the hook socket path by naming one of them.
+    if let Some(e) = &engine {
+        for (k, v) in &e.env {
+            env.insert(k.clone(), v.clone());
+        }
+    }
 
     // `hive` present means "provision this as an agent, not a bare shell".
     // Provisioning runs BEFORE the spawn and its failure aborts it: an agent
