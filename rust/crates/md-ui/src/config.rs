@@ -144,11 +144,15 @@ fn Agents(
         models.set(Vec::new());
         leptos::task::spawn_local(async move {
             if let Ok(v) = api::get_json(&format!("/api/engines/{id}/models")).await {
-                models.set(
-                    v["models"].as_array()
-                        .map(|a| a.iter().filter_map(|m| m.as_str().map(String::from)).collect())
-                        .unwrap_or_default(),
-                );
+                let found: Vec<String> = v["models"].as_array()
+                    .map(|a| a.iter().filter_map(|m| m.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                // Cleared on the engine change above, so an unreachable server
+                // leaves an empty picker and the engine's own model — not a
+                // stale list belonging to a different engine.
+                if !found.is_empty() {
+                    models.set(found);
+                }
             }
         });
     };
@@ -1108,7 +1112,15 @@ fn Engines(status: RwSignal<String>) -> impl IntoView {
                                                                         .map(String::from)).collect())
                                                                     .unwrap_or_default();
                                                                 let n = found.len();
-                                                                choices.set(found);
+                                                                // An empty answer REPLACES nothing. A server
+                                                                // that has gone away returns the catalogue
+                                                                // list, and for an engine that ships none
+                                                                // that is empty — blanking the picker on a
+                                                                // failed refresh would lose the models the
+                                                                // last good one found.
+                                                                if !found.is_empty() {
+                                                                    choices.set(found);
+                                                                }
                                                                 status.set(match v["source"].as_str() {
                                                                     Some("endpoint") => format!("{n} models on that server"),
                                                                     _ => v["error"].as_str()
