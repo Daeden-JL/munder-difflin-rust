@@ -120,6 +120,9 @@ fn Agents(
     let is_god = RwSignal::new(false);
     let roster = RwSignal::new(Vec::<Value>::new());
     let engines = RwSignal::new(Vec::<Value>::new());
+    // The model this agent runs on. Empty means its engine's.
+    let model = RwSignal::new(String::new());
+    let models = RwSignal::new(Vec::<String>::new());
 
     Effect::new(move |_| {
         let _ = changed.get();
@@ -133,6 +136,23 @@ fn Agents(
             }
         });
     });
+
+    // Whichever engine is selected decides what there is to choose from, so the
+    // list is re-read rather than accumulated across engines.
+    let load_models = move |id: String| {
+        model.set(String::new());
+        models.set(Vec::new());
+        leptos::task::spawn_local(async move {
+            if let Ok(v) = api::get_json(&format!("/api/engines/{id}/models")).await {
+                models.set(
+                    v["models"].as_array()
+                        .map(|a| a.iter().filter_map(|m| m.as_str().map(String::from)).collect())
+                        .unwrap_or_default(),
+                );
+            }
+        });
+    };
+    Effect::new(move |_| load_models(engine.get()));
 
     // What an engine runs, for the line under the picker.
     let engine_line = move |id: &str| -> String {
@@ -263,9 +283,10 @@ fn Agents(
     });
 
     let hire = move |_| {
-        let (mut n, r, c, cmd, god, eng) = (
+        let (mut n, r, c, cmd, god, eng, mdl) = (
             name.get_untracked(), role.get_untracked(), cwd.get_untracked(),
             command.get_untracked(), is_god.get_untracked(), engine.get_untracked(),
+            model.get_untracked(),
         );
         let (mut slot, mut line) = (String::new(), persona.get_untracked());
         let (mut post, mut post2) = (primary.get_untracked(), secondary.get_untracked());
@@ -333,7 +354,7 @@ fn Agents(
                 "cwd": c,
                 "cols": 100, "rows": 30,
                 "hive": {
-                    "name": n, "role": r, "isGod": god, "engine": eng,
+                    "name": n, "role": r, "isGod": god, "engine": eng, "model": mdl,
                     // The chosen personality and posting travel with the spawn
                     // and are stored on the registry entry, so they survive a
                     // restart. Assigning them by ordering on every read would
@@ -541,6 +562,36 @@ fn Agents(
                 </select>
                 <p class="hint">{move || engine_line(&engine.get())}</p>
 
+                // Only where the engine takes one — the same rule as the
+                // engines panel, so a picker never appears next to something
+                // that cannot use it.
+                <Show when=move || {
+                    engines.get().iter().any(|x| x["id"].as_str() == Some(engine.get().as_str())
+                        && x["picksModel"].as_bool() == Some(true))
+                }>
+                    <label>"model"</label>
+                    <select on:change=move |e| model.set(event_target_value(&e))>
+                        {move || {
+                            let picked = model.get();
+                            let mut opts = vec![view! {
+                                <option value=String::new() selected=picked.is_empty()>
+                                    {"the engine\u{2019}s model".to_string()}
+                                </option>
+                            }];
+                            opts.extend(models.get().into_iter().map(|m| {
+                                let (sel, label) = (picked == m, m.clone());
+                                view! { <option value=m selected=sel>{label}</option> }
+                            }));
+                            opts
+                        }}
+                    </select>
+                    <p class="hint">
+                        "Each agent can run a different model. The orchestrator usually wants
+                         the one that reasons best; an agent grinding through files usually
+                         wants the one that is cheap."
+                    </p>
+                </Show>
+
                 <label>"command — leave empty to use the engine\u{2019}s"</label>
                 <input prop:value=move || command.get()
                        placeholder=move || {
@@ -566,7 +617,7 @@ fn Agents(
                         let (i1, i2, i3) = (id.clone(), id.clone(), id.clone());
                         let held = a["onHold"].as_bool().unwrap_or(false);
                         let archived = a["archived"].as_bool().unwrap_or(false);
-                        let (mine, mine2) = (a.clone(), a.clone());
+                        let (mine, mine2, mine3) = (a.clone(), a.clone(), a.clone());
                         let now = a["provider"].as_str().unwrap_or("claude").to_string();
                         view! {
                             <div class="row">
@@ -596,6 +647,7 @@ fn Agents(
                                                 "role": a["role"].as_str().unwrap_or(""),
                                                 "isGod": a["isGod"].as_bool().unwrap_or(false),
                                                 "engine": next,
+                                                "model": a["model"].as_str().unwrap_or(""),
                                                 "archetype": a["archetype"].as_str().unwrap_or(""),
                                                 "primaryPoi": a["primaryPoi"].as_str().unwrap_or(""),
                                                 "secondaryPoi": a["secondaryPoi"].as_str().unwrap_or(""),
@@ -634,6 +686,82 @@ fn Agents(
                                         changed.update(|n| *n = n.wrapping_add(1));
                                     });
                                 }>{if archived { "restore" } else { "archive" }}</button>
+                                // Which model THIS agent runs on. Its engine's
+                                // list, so a model discovered and saved in the
+                                // engines panel is offered here.
+                                {
+                                    let a = mine3.clone();
+                                    let now_engine = a["provider"].as_str().unwrap_or("claude").to_string();
+                                    let now_model = a["model"].as_str().unwrap_or("").to_string();
+                                    let picks = move || engines.get().iter().any(|x| {
+                                        x["id"].as_str() == Some(now_engine.as_str())
+                                            && x["picksModel"].as_bool() == Some(true)
+                                    });
+                                    let choices = {
+                                        let eng = a["provider"].as_str().unwrap_or("claude").to_string();
+                                        move || engines.get().iter()
+                                            .find(|x| x["id"].as_str() == Some(eng.as_str()))
+                                            .and_then(|x| x["models"].as_array().cloned())
+                                            .map(|a| a.iter().filter_map(|m| m.as_str().map(String::from))
+                                                .collect::<Vec<_>>())
+                                            .unwrap_or_default()
+                                    };
+                                    view! {
+                                        <Show when=picks>
+                                            {
+                                                let (a, now_model) = (a.clone(), now_model.clone());
+                                                let choices = choices.clone();
+                                                view! {
+                                                    <select on:change=move |ev| {
+                                                        let (a, next) = (a.clone(), event_target_value(&ev));
+                                                        let id = a["id"].as_str().unwrap_or("").to_string();
+                                                        status.set(format!("restarting {id} on {}…",
+                                                            if next.is_empty() { "its engine\u{2019}s model".into() }
+                                                            else { next.clone() }));
+                                                        leptos::task::spawn_local(async move {
+                                                            let opts = json!([{
+                                                                "id": a["id"].as_str().unwrap_or(""),
+                                                                "cwd": a["cwd"].as_str().unwrap_or("~"),
+                                                                "cols": 100, "rows": 30, "resume": true,
+                                                                "hive": {
+                                                                    "name": a["name"].as_str().unwrap_or(""),
+                                                                    "role": a["role"].as_str().unwrap_or(""),
+                                                                    "isGod": a["isGod"].as_bool().unwrap_or(false),
+                                                                    "engine": a["provider"].as_str().unwrap_or("claude"),
+                                                                    "model": next,
+                                                                    "archetype": a["archetype"].as_str().unwrap_or(""),
+                                                                    "primaryPoi": a["primaryPoi"].as_str().unwrap_or(""),
+                                                                    "secondaryPoi": a["secondaryPoi"].as_str().unwrap_or(""),
+                                                                },
+                                                            }]);
+                                                            match restart(a["id"].as_str().unwrap_or(""), opts).await {
+                                                                Ok(v) if v["ok"] == true => status.set("restarted".into()),
+                                                                Ok(v) => status.set(v["error"].as_str()
+                                                                    .unwrap_or("could not restart").to_string()),
+                                                                Err(e) => status.set(e),
+                                                            }
+                                                            changed.update(|n| *n = n.wrapping_add(1));
+                                                        });
+                                                    }>
+                                                        {move || {
+                                                            let picked = now_model.clone();
+                                                            let mut opts = vec![view! {
+                                                                <option value=String::new() selected=picked.is_empty()>
+                                                                    {"engine\u{2019}s model".to_string()}
+                                                                </option>
+                                                            }];
+                                                            opts.extend(choices().into_iter().map(|m| {
+                                                                let (sel, label) = (picked == m, m.clone());
+                                                                view! { <option value=m selected=sel>{label}</option> }
+                                                            }));
+                                                            opts
+                                                        }}
+                                                    </select>
+                                                }
+                                            }
+                                        </Show>
+                                    }
+                                }
                                 {
                                     let a = mine2.clone();
                                     // A Signal, not a closure: it is read in three
@@ -919,6 +1047,9 @@ fn Engines(status: RwSignal<String>) -> impl IntoView {
                                         ("args", json!(args_of(&argv.get_untracked()))),
                                         ("env", json!(env_of(&envs.get_untracked()))),
                                         ("model", json!(model.get_untracked())),
+                                        // Saved too, so a list discovered here
+                                        // is available to the agent pickers.
+                                        ("models", json!(choices.get_untracked())),
                                     ]);
                                 }>"save"</button>
                                 // A built-in is hidden rather than deleted: its

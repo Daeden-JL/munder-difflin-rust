@@ -60,6 +60,14 @@ pub struct AgentMeta {
     /// What was actually run, recorded so the roster can show it. Derived from
     /// the engine unless the caller overrode it.
     pub command: Option<String>,
+    /// The model this agent runs on, overriding its engine's.
+    ///
+    /// Per agent because a floor is not one job: the orchestrator wants the
+    /// model that reasons best and a worker grinding through files wants the
+    /// one that is cheap. `None` means "leave whatever is recorded" — a
+    /// respawn carries no opinion, and letting it write one would reset every
+    /// agent to its engine's default on the next restart.
+    pub model: Option<String>,
 }
 
 /// What the PTY spawn needs to add so the agent is hive-aware.
@@ -307,6 +315,7 @@ impl Provisioner<'_> {
             ("archetype", &meta.archetype),
             ("primaryPoi", &meta.primary_poi),
             ("secondaryPoi", &meta.secondary_poi),
+            ("model", &meta.model),
         ] {
             if let Some(v) = v.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
                 entry.insert(k.into(), json!(v));
@@ -484,6 +493,7 @@ mod tests {
             secondary_poi: None,
             hooks: true,
             command: Some("claude".into()),
+            model: None,
         }
     }
 

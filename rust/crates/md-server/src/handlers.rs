@@ -910,6 +910,8 @@ pub fn recast(ctx: &Ctx) -> RpcResponse {
             hooks: engines::resolve(&config, a["provider"].as_str().unwrap_or("claude"))
                 .is_some_and(|e| e.hooks),
             command: a["command"].as_str().map(String::from),
+            // A recast changes who an agent is, never what it runs on.
+            model: a["model"].as_str().map(String::from),
             role: a["role"].as_str().map(String::from),
             cwd: a["cwd"].as_str().unwrap_or("").to_string(),
             is_god: a["isGod"].as_bool().unwrap_or(false),
@@ -2086,6 +2088,17 @@ fn pty_spawn(ctx: &Ctx) -> RpcResponse {
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_else(|| json!({}));
     let Chosen { engine, engine_id, command } = choose_engine(&config, &opts);
+    // The agent's own model, falling back to the engine's. One agent asking for
+    // a bigger model must not change what every other agent on that engine
+    // runs, which is what setting it on the engine would do.
+    let model = opts
+        .pointer("/hive/model")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(String::from)
+        .or_else(|| engine.as_ref().map(|e| e.model.clone()))
+        .unwrap_or_default();
     let raw_cwd = opts.get("cwd").and_then(|v| v.as_str()).unwrap_or("~").to_string();
     let cwd = tri!(ctx.resolve(&raw_cwd));
     // The engine's own arguments come first, so a resume flag and the identity
@@ -2096,9 +2109,9 @@ fn pty_spawn(ctx: &Ctx) -> RpcResponse {
         .or_else(|| engine.as_ref().map(|e| e.args.clone()))
         .unwrap_or_default();
     if let Some(e) = &engine {
-        if !e.model.trim().is_empty() && !e.model_flag.is_empty() {
+        if !model.trim().is_empty() && !e.model_flag.is_empty() {
             args.push(e.model_flag.clone());
-            args.push(e.model.clone());
+            args.push(model.clone());
         }
     }
     let cols = opts.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
@@ -2117,8 +2130,8 @@ fn pty_spawn(ctx: &Ctx) -> RpcResponse {
         // The chosen model, however this CLI takes it. Applied after the
         // engine's own environment so a model picked in the panel wins over one
         // left in the env box.
-        if !e.model.trim().is_empty() && !e.model_env.is_empty() {
-            env.insert(e.model_env.clone(), e.model.clone());
+        if !model.trim().is_empty() && !e.model_env.is_empty() {
+            env.insert(e.model_env.clone(), model.clone());
         }
     }
 
@@ -2143,6 +2156,7 @@ fn pty_spawn(ctx: &Ctx) -> RpcResponse {
             archetype: meta.get("archetype").and_then(|v| v.as_str()).map(String::from),
             primary_poi: meta.get("primaryPoi").and_then(|v| v.as_str()).map(String::from),
             secondary_poi: meta.get("secondaryPoi").and_then(|v| v.as_str()).map(String::from),
+            model: meta.get("model").and_then(|v| v.as_str()).map(String::from),
         };
         let hive = hive::Hive::new(ctx.paths.hive_root());
 
@@ -2372,6 +2386,48 @@ mod tests {
         }
         assert!(propose_tool("michael", "michael", &approved,
             &tool(json!({ "id": "one-more", "command": "sh" }))).is_ok());
+    }
+
+    /// Resolve the model the way the spawn does, so the precedence is testable
+    /// without a pty.
+    fn model_for(cfg: &Value, opts: &Value) -> String {
+        let c = choose_engine(cfg, opts);
+        opts.pointer("/hive/model")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(String::from)
+            .or_else(|| c.engine.as_ref().map(|e| e.model.clone()))
+            .unwrap_or_default()
+    }
+
+    /// One agent asking for a bigger model must not change what every other
+    /// agent on that engine runs — which is exactly what setting it on the
+    /// engine would do.
+    #[test]
+    fn an_agents_model_overrides_its_engines() {
+        let cfg = json!({ "engines": { "claude": { "model": "haiku" } } });
+
+        // No opinion: the engine's model.
+        assert_eq!(model_for(&cfg, &opts(json!({ "hive": { "engine": "claude" } }))), "haiku");
+
+        // The agent's own wins.
+        assert_eq!(
+            model_for(&cfg, &opts(json!({ "hive": { "engine": "claude", "model": "opus" } }))),
+            "opus"
+        );
+
+        // Blank is not a choice — it falls back rather than clearing the model.
+        assert_eq!(
+            model_for(&cfg, &opts(json!({ "hive": { "engine": "claude", "model": "  " } }))),
+            "haiku"
+        );
+    }
+
+    /// With neither set, nothing is passed and the CLI picks for itself.
+    #[test]
+    fn no_model_anywhere_means_the_cli_decides() {
+        assert!(model_for(&json!({}), &opts(json!({ "hive": { "engine": "claude" } }))).is_empty());
     }
 
     #[test]
