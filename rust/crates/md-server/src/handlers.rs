@@ -2127,6 +2127,21 @@ fn pty_spawn(ctx: &Ctx) -> RpcResponse {
         for (k, v) in &e.env {
             env.insert(k.clone(), v.clone());
         }
+        // Credentials, decrypted here and nowhere else. After the plain
+        // environment, so a stored key wins over a catalogue placeholder of the
+        // same name; before the hive injection, so it still cannot shadow
+        // AGENT_ID or the hook socket.
+        //
+        // A failure aborts the spawn. An agent that starts without its key does
+        // not look broken — it looks hired, and reports a refusal from a server
+        // minutes later into a terminal nobody is reading.
+        if !e.env_secrets.is_empty() {
+            let store = crate::secrets::Secrets::new(&ctx.paths.harness_home());
+            match engines::secret_env(e, &store) {
+                Ok(pairs) => env.extend(pairs),
+                Err(why) => return RpcResponse::ok(json!({ "ok": false, "error": why })),
+            }
+        }
         // The chosen model, however this CLI takes it. Applied after the
         // engine's own environment so a model picked in the panel wins over one
         // left in the env box.

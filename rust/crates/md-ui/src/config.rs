@@ -844,13 +844,21 @@ fn Agents(
 #[component]
 fn Engines(status: RwSignal<String>) -> impl IntoView {
     let list = RwSignal::new(Vec::<Value>::new());
-    // The tenant's own overrides, kept raw so a save can send the whole map.
+    // The tenant's own overrides, kept raw so registering and hiding can send
+    // the whole map. Saving one engine goes through its own endpoint instead,
+    // because a credential must not travel through the config.
     let raw = RwSignal::new(serde_json::Map::new());
+    // Whether a credential typed here has anywhere to go. Assumed until the
+    // server says otherwise, so a slow load does not flash a warning.
+    let store_ok = RwSignal::new(true);
 
     let load = move || {
         leptos::task::spawn_local(async move {
             match api::get_json("/api/engines").await {
-                Ok(v) => list.set(v["engines"].as_array().cloned().unwrap_or_default()),
+                Ok(v) => {
+                    list.set(v["engines"].as_array().cloned().unwrap_or_default());
+                    store_ok.set(v["secretStore"].as_bool().unwrap_or(false));
+                }
                 Err(e) => status.set(format!("could not load engines: {e}")),
             }
             if let Ok(cfg) = api::rpc("config:get", json!([])).await {
@@ -981,15 +989,24 @@ fn Engines(status: RwSignal<String>) -> impl IntoView {
                         // This is where a remote model server's address lives,
                         // so it has to be reachable without hand-editing a
                         // config file on the server.
-                        let envs = RwSignal::new(
-                            e["env"].as_object().map(|m| {
-                                let mut rows: Vec<String> = m.iter()
-                                    .filter_map(|(k, v)| v.as_str().map(|v| format!("{k}={v}")))
-                                    .collect();
-                                rows.sort();
-                                rows.join("\n")
-                            }).unwrap_or_default(),
-                        );
+                        // Credentials are not in the response at all — only
+                        // their names — so they appear as a mask. Sending the
+                        // mask back means "leave it"; clearing the line means
+                        // "forget it".
+                        let exposed = e["envPlaintext"].as_array()
+                            .map(|a| a.len()).unwrap_or(0);
+                        let envs = RwSignal::new({
+                            let mut rows: Vec<String> = e["env"].as_object().map(|m| m.iter()
+                                .filter_map(|(k, v)| v.as_str().map(|v| format!("{k}={v}")))
+                                .collect()).unwrap_or_default();
+                            for held in ["envSecrets", "envPlaintext"] {
+                                rows.extend(e[held].as_array().into_iter().flatten()
+                                    .filter_map(|k| k.as_str())
+                                    .map(|k| format!("{k}={MASK}")));
+                            }
+                            rows.sort();
+                            rows.join("\n")
+                        });
                         let argv = RwSignal::new(
                             e["args"].as_array().map(|a| a.iter()
                                 .filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" "))
@@ -1003,6 +1020,14 @@ fn Engines(status: RwSignal<String>) -> impl IntoView {
                                 <span class=if ok { "tag" } else { "tag warn" }>
                                     {if ok { "installed" } else { "missing" }}
                                 </span>
+                                // Said out loud, because it is true right now
+                                // and the fix is one click: saving the engine
+                                // moves the value into the encrypted store.
+                                <Show when=move || exposed != 0>
+                                    <span class="tag warn" title="Saving this engine encrypts it.">
+                                        {format!("{exposed} in the clear")}
+                                    </span>
+                                </Show>
                                 <span class="grow"></span>
                                 <input prop:value=move || cmd.get()
                                        on:input=move |ev| cmd.set(event_target_value(&ev))/>
@@ -1045,16 +1070,38 @@ fn Engines(status: RwSignal<String>) -> impl IntoView {
                                         }
                                     }
                                 </Show>
+                                // Its own endpoint rather than a slice of the
+                                // config: the server has to sort credentials
+                                // out of the environment before anything is
+                                // written, and it is the only party that can.
                                 <button class="ghost" on:click=move |_| {
-                                    patch(i1.clone(), vec![
-                                        ("command", json!(cmd.get_untracked())),
-                                        ("args", json!(args_of(&argv.get_untracked()))),
-                                        ("env", json!(env_of(&envs.get_untracked()))),
-                                        ("model", json!(model.get_untracked())),
+                                    let id = i1.clone();
+                                    let body = json!({
+                                        "command": cmd.get_untracked(),
+                                        "args": args_of(&argv.get_untracked()),
+                                        "env": env_of(&envs.get_untracked()),
+                                        "model": model.get_untracked(),
                                         // Saved too, so a list discovered here
                                         // is available to the agent pickers.
-                                        ("models", json!(choices.get_untracked())),
-                                    ]);
+                                        "models": choices.get_untracked(),
+                                    });
+                                    status.set("saving\u{2026}".into());
+                                    leptos::task::spawn_local(async move {
+                                        match api::post_json(&format!("/api/engines/{id}"), &body).await {
+                                            Ok(v) if v["ok"] == true => {
+                                                let n = v["stored"].as_array().map(|a| a.len()).unwrap_or(0);
+                                                status.set(match n {
+                                                    0 => "saved".to_string(),
+                                                    1 => "saved \u{2014} 1 credential encrypted".to_string(),
+                                                    n => format!("saved \u{2014} {n} credentials encrypted"),
+                                                });
+                                            }
+                                            Ok(v) => status.set(
+                                                v["error"].as_str().unwrap_or("could not save").to_string()),
+                                            Err(e) => status.set(e),
+                                        }
+                                        load();
+                                    });
                                 }>"save"</button>
                                 // A built-in is hidden rather than deleted: its
                                 // definition comes back on the next release, so
@@ -1143,10 +1190,23 @@ fn Engines(status: RwSignal<String>) -> impl IntoView {
                 <p class="hint">
                     "An engine\u{2019}s environment is how a CLI is told which model server to
                      talk to \u{2014} point LM Studio at another machine by changing its
-                     "<code>"OPENAI_BASE_URL"</code>" to that host. It is stored in this
-                     floor\u{2019}s configuration in plain text, so put an endpoint here and a
-                     real API key somewhere else."
+                     "<code>"OPENAI_BASE_URL"</code>" to that host. A line whose NAME looks
+                     like a credential \u{2014} anything with "<code>"KEY"</code>", "
+                    <code>"TOKEN"</code>", "<code>"SECRET"</code>", "<code>"PASSWORD"</code>"
+                     in it \u{2014} is encrypted instead of being kept here, which is why it
+                     comes back as "<code>"\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}"</code>
+                     ". Leave the dots to keep it, clear the line to forget it, or type a new
+                     value to replace it."
                 </p>
+                <Show when=move || !store_ok.get()>
+                    <p class="hint warn">
+                        "Secret storage is off on this server, so a credential typed here has
+                         nowhere safe to go and the save will be refused rather than writing
+                         it in the clear. Set "<code>"MD_SECRET_KEY"</code>" (32 characters or
+                         more) and restart the server to turn it on. Everything else on this
+                         panel works either way."
+                    </p>
+                </Show>
                 <p class="hint">
                     "Installing puts the command where your agents look for it, and it stays
                      there across rebuilds \u{2014} it lands in this floor\u{2019}s data, not in the
@@ -1181,6 +1241,10 @@ fn Engines(status: RwSignal<String>) -> impl IntoView {
 /// Whitespace around either side is dropped, blank lines are ignored, and a
 /// line with no `=` is skipped rather than becoming a variable with an empty
 /// name — a typo should lose one line, not the whole block.
+/// What the panel shows in place of a credential, and what it sends back to
+/// mean "leave it alone". Must match the server's `engines::MASK`.
+const MASK: &str = "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}";
+
 fn env_of(s: &str) -> serde_json::Map<String, Value> {
     s.lines()
         .filter_map(|l| l.split_once('='))

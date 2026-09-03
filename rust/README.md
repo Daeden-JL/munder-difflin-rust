@@ -42,6 +42,32 @@ setup → engines. Only Claude Code is marked hooked, because the original's
 translating shims for the others are not ported and an engine that claims hooks
 it lacks looks live on the floor and reports nothing.
 
+An engine also carries an **environment**, which is how an OpenAI-wire CLI is
+pointed at a model server — and therefore where its API key would go. Keys do
+not go in the config with the address. Any environment name that looks like a
+credential (`KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL` — see
+`engines::is_secret`) is encrypted into the tenant's secret store, the config
+keeps only the NAME under `envSecrets`, and no response carries the value: the
+panel can write a credential and can never read one. It is decrypted in exactly
+one place, `pty_spawn`, into the agent's own environment.
+
+Three consequences worth knowing:
+
+* **No `MD_SECRET_KEY`, no credential.** The save is refused rather than
+  downgraded to plaintext, and the panel says storage is off instead of offering
+  a button that always fails. This is the rule `secrets.rs` already held for
+  integration tokens.
+* **A store that cannot produce what the config names stops the spawn.** An
+  agent started without its key does not look broken — it looks hired, and
+  reports a refusal from a server minutes later into a terminal nobody is
+  reading.
+* **A key entered before any of this existed is migrated, not nagged about.**
+  The panel marks it "in the clear"; saving that engine moves it into the store
+  and drops it from the config, without anyone having to find the value again.
+
+Catalogue defaults are exempt: LM Studio ships `OPENAI_API_KEY=lm-studio`, which
+is printed in `engines.rs` and is not a secret whatever it is called.
+
 **Tools** are MCP servers (`crates/md-server/src/mcp.rs`), registered the same
 way under `mcpDefaults`. The consent tiers are load-bearing: `safe-readonly`
 ships on, everything else needs an explicit `enabled: true`, and a registration

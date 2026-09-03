@@ -14,6 +14,14 @@
 //!   through the terminal handoff instead: mail typed into its REPL. Both are
 //!   citizens; only one of them narrates.
 //!
+//! An engine's environment is where a remote model server's address lives, and
+//! therefore where its API key lives too. Values under a **secret-shaped name**
+//! (`is_secret`) are not kept in the config with the rest: they go to the
+//! encrypted store, the config keeps only the NAME under `envSecrets`, and no
+//! response ever carries the value back — the panel can write a credential and
+//! never read one. Catalogue defaults are exempt, because a default that ships
+//! in this file is not a secret no matter what it is called.
+//!
 //! Built-ins are a starting point, not a whitelist. A tenant registers its own
 //! under `engines` in the config, overriding any field of a built-in or adding
 //! something the catalogue has never heard of — which is the point, because the
@@ -23,6 +31,140 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde_json::{json, Value};
+
+/// What the panel shows in place of a credential, and what it sends back to
+/// mean "leave this one alone". Bullets rather than a word, so it cannot
+/// collide with a value somebody actually wants to store.
+pub const MASK: &str = "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}";
+
+/// Whether an environment variable's NAME says its value is a credential.
+///
+/// A heuristic, and deliberately one: the alternative is asking an operator to
+/// tick "this is a secret" beside every line, which gets it wrong in the
+/// direction that matters. The escape hatch is the name — a value you want to
+/// be able to read back does not go in a variable called `..._TOKEN`.
+pub fn is_secret(key: &str) -> bool {
+    let k = key.to_ascii_uppercase();
+    ["KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL"]
+        .iter()
+        .any(|needle| k.contains(needle))
+}
+
+/// The handle a credential is stored under. Scoped by engine, so two engines
+/// pointed at two servers can hold two different `OPENAI_API_KEY`s.
+pub fn secret_ref(engine: &str, key: &str) -> String {
+    format!("engine:{engine}:{key}")
+}
+
+/// A value the panel sent back untouched: all bullets, meaning "keep it".
+fn masked(v: &str) -> bool {
+    let v = v.trim();
+    !v.is_empty() && v.chars().all(|c| c == '\u{2022}')
+}
+
+/// What one panel save means for an engine's environment.
+///
+/// Pure, and separate from anything that writes: which values are credentials,
+/// which are being replaced and which are being forgotten is the whole of the
+/// decision, and it is the part worth testing without a key or a disk.
+#[derive(Debug, Default, PartialEq)]
+pub struct EnvPlan {
+    /// Stays in the config, in the clear.
+    pub plain: BTreeMap<String, String>,
+    /// Goes to the encrypted store, keyed by environment name.
+    pub store: BTreeMap<String, String>,
+    /// Already stored, sent back masked: left exactly as it is.
+    pub keep: Vec<String>,
+    /// Stored, and now gone from the panel: dropped from the store.
+    pub forget: Vec<String>,
+}
+
+impl EnvPlan {
+    /// Every credential this engine will have after the save. What goes into
+    /// the config under `envSecrets`, so a spawn knows what to look up.
+    pub fn secret_names(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.store.keys().cloned().chain(self.keep.iter().cloned()).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+}
+
+/// Secret-shaped values sitting in a tenant's OWN override, in the clear.
+///
+/// These are the ones entered before there was anywhere better to put them.
+/// Catalogue defaults are excluded on purpose: a placeholder printed in this
+/// file is not a credential, whatever it is called.
+pub fn plaintext_secrets(config: &Value, id: &str) -> BTreeMap<String, String> {
+    config
+        .get("engines")
+        .and_then(|v| v.get(id))
+        .and_then(|p| p.get("env"))
+        .and_then(|v| v.as_object())
+        .map(|m| {
+            m.iter()
+                .filter(|(k, _)| is_secret(k))
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Sort a submitted environment into the four cases, given the credentials
+/// already held for this engine (`held`) and any still sitting in the config in
+/// the clear (`plaintext`).
+pub fn plan_env(submitted: &Value, held: &[String], plaintext: &BTreeMap<String, String>) -> EnvPlan {
+    let mut plan = EnvPlan::default();
+    let rows: Vec<(String, String)> = submitted
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    for (k, v) in rows {
+        if !is_secret(&k) {
+            plan.plain.insert(k, v);
+            continue;
+        }
+        if masked(&v) {
+            if held.contains(&k) {
+                plan.keep.push(k);
+            } else if let Some(old) = plaintext.get(&k) {
+                // A credential that predates the store, sent back masked
+                // because the panel could not show it either. Saving the engine
+                // MOVES it rather than asking the operator to find it and type
+                // it again — and rather than dropping it, which is what
+                // treating an unrecognised mask as "nothing" would do.
+                plan.store.insert(k, old.clone());
+            }
+            // A mask against a name we hold nothing for at all records nothing:
+            // naming a credential that does not exist would make every spawn on
+            // this engine refuse.
+        } else if v.trim().is_empty() {
+            // Cleared on purpose.
+            if held.contains(&k) {
+                plan.forget.push(k);
+            }
+        } else {
+            plan.store.insert(k, v);
+        }
+    }
+
+    // A line deleted from the panel is a credential deleted from the store —
+    // that is the only delete gesture the textarea has.
+    for k in held {
+
+        if !plan.store.contains_key(k) && !plan.keep.contains(k) && !plan.forget.contains(k) {
+            plan.forget.push(k.clone());
+        }
+    }
+    plan.keep.sort();
+    plan.forget.sort();
+    plan
+}
 
 /// One engine the harness ships knowing about.
 pub struct Builtin {
@@ -192,6 +334,9 @@ pub struct Engine {
     pub hooks: bool,
     pub install: String,
     pub env: BTreeMap<String, String>,
+    /// Environment names whose values live in the encrypted store, not here.
+    /// Names only — this struct never carries a credential either.
+    pub env_secrets: Vec<String>,
     pub model_flag: String,
     pub model_env: String,
     pub models: Vec<String>,
@@ -223,6 +368,9 @@ impl Engine {
             hooks: b.hooks,
             install: b.install.into(),
             env: b.env.iter().map(|(k, v)| ((*k).to_string(), (*v).to_string())).collect(),
+            // The catalogue ships no credentials, so there is nothing to look
+            // up until an operator enters one.
+            env_secrets: Vec::new(),
             model_flag: b.model_flag.into(),
             model_env: b.model_env.into(),
             models: b.models.iter().map(|m| (*m).to_string()).collect(),
@@ -263,6 +411,12 @@ impl Engine {
         }
         if let Some(v) = over.get("model").and_then(|v| v.as_str()) {
             self.model = v.into();
+        }
+        // Names of credentials in the store. Replaced rather than merged: the
+        // list IS what a save decided, and a name left behind would send the
+        // spawn looking for something nobody holds.
+        if let Some(v) = strings(over.get("envSecrets")) {
+            self.env_secrets = v;
         }
         // MERGED, not replaced: overriding the base URL of a built-in should
         // not silently drop the API key that goes with it.
@@ -329,6 +483,7 @@ pub fn all(config: &Value) -> Vec<Engine> {
                 env: v.get("env").and_then(|e| e.as_object()).map(|m| {
                     m.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect()
                 }).unwrap_or_default(),
+                env_secrets: strings(v.get("envSecrets")).unwrap_or_default(),
                 model_flag: v.get("modelFlag").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                 model_env: v.get("modelEnv").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                 models: strings(v.get("models")).unwrap_or_default(),
@@ -369,11 +524,57 @@ pub fn available(command: &str) -> bool {
     std::env::split_paths(md_pty::env::agent_path()).any(|dir| dir.join(cmd).is_file())
 }
 
+/// The engine's credentials, decrypted, ready to join a process environment.
+///
+/// Fails rather than spawning without one. An agent started with no API key
+/// does not fail visibly — it fails as a refusal from a server, minutes later,
+/// in a terminal nobody is watching — so a store that cannot produce what the
+/// config says it holds stops the spawn instead.
+pub fn secret_env(
+    e: &Engine,
+    store: &crate::secrets::Secrets,
+) -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::new();
+    for key in &e.env_secrets {
+        match store.get(&secret_ref(&e.id, key)) {
+            Ok(Some(v)) => out.push((key.clone(), v)),
+            Ok(None) => {
+                return Err(format!(
+                    "{} expects {key} from the secret store and there is nothing there. \
+                     Enter it again under setup \u{2192} engines.",
+                    e.label
+                ))
+            }
+            Err(err) => return Err(format!("{}: {key} could not be read \u{2014} {err}", e.label)),
+        }
+    }
+    Ok(out)
+}
+
 /// The catalogue as the setup panel shows it.
+///
+/// The one thing this does not contain is a credential. `env` carries the
+/// values that are safe to read back; `envSecrets` and `envPlaintext` carry the
+/// NAMES of the ones that are not, which is enough for the panel to draw a
+/// masked line and to say which of them is still sitting in the config in the
+/// clear.
 pub fn view(config: &Value) -> Value {
     json!(all(config)
         .into_iter()
-        .map(|e| json!({
+        .map(|e| {
+            // Only what an OPERATOR typed can be an exposed credential. A
+            // catalogue default under a secret-shaped name is printed in this
+            // file already, so masking it would cost a line of the panel and
+            // protect nothing.
+            let plaintext: Vec<String> =
+                plaintext_secrets(config, &e.id).into_keys().collect();
+            let shown: BTreeMap<String, String> = e
+                .env
+                .iter()
+                .filter(|(k, _)| !plaintext.contains(k) && !e.env_secrets.contains(k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            json!({
             "id": e.id,
             "label": e.label,
             "description": e.description,
@@ -381,7 +582,13 @@ pub fn view(config: &Value) -> Value {
             "args": e.args,
             "hooks": e.hooks,
             "install": e.install,
-            "env": e.env,
+            "env": shown,
+            // Held encrypted: the panel shows these masked.
+            "envSecrets": e.env_secrets,
+            // Secret-shaped and still in the config in the clear, because they
+            // were entered before there was anywhere better to put them.
+            // Saving the engine moves them into the store.
+            "envPlaintext": plaintext,
             "modelFlag": e.model_flag,
             "modelEnv": e.model_env,
             "models": e.models,
@@ -391,13 +598,189 @@ pub fn view(config: &Value) -> Value {
             "picksModel": !(e.model_flag.is_empty() && e.model_env.is_empty()),
             "builtin": e.builtin,
             "available": available(&e.command),
-        }))
+            })
+        })
         .collect::<Vec<_>>())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- credentials --------------------------------------------------------
+
+    #[test]
+    fn a_name_decides_whether_a_value_is_a_credential() {
+        for k in ["OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "GH_TOKEN",
+                  "MY_SECRET", "DB_PASSWORD", "AWS_CREDENTIAL_FILE",
+                  // Case is not the operator's problem.
+                  "openai_api_key"] {
+            assert!(is_secret(k), "{k} should be treated as a credential");
+        }
+        // The things an engine's environment is mostly made of.
+        for k in ["OPENAI_BASE_URL", "OPENAI_MODEL", "PATH", "HOME", "TERM",
+                  "MD_AGENT_PATH", "NO_COLOR"] {
+            assert!(!is_secret(k), "{k} is not a credential");
+        }
+    }
+
+    /// The whole point: a value typed under a secret-shaped name never reaches
+    /// the config, and the catalogue never hands one back.
+    #[test]
+    fn a_credential_leaves_the_environment_and_only_its_name_remains() {
+        let plan = plan_env(
+            &json!({ "OPENAI_BASE_URL": "http://192.168.99.8:1234/v1",
+                     "OPENAI_API_KEY": "sk-live-do-not-log-me" }),
+            &[],
+            &BTreeMap::new(),
+        );
+        assert_eq!(plan.plain.len(), 1, "only the address stays: {:?}", plan.plain);
+        assert_eq!(plan.plain["OPENAI_BASE_URL"], "http://192.168.99.8:1234/v1");
+        assert_eq!(plan.store["OPENAI_API_KEY"], "sk-live-do-not-log-me");
+        assert_eq!(plan.secret_names(), vec!["OPENAI_API_KEY"]);
+
+        // And the view built from that config cannot produce it.
+        let cfg = json!({ "engines": { "lmstudio": {
+            "env": plan.plain, "envSecrets": plan.secret_names() } } });
+        let shown = view(&cfg).as_array().unwrap().iter()
+            .find(|e| e["id"] == "lmstudio").cloned().unwrap();
+        assert!(shown["env"].get("OPENAI_API_KEY").is_none(), "{}", shown["env"]);
+        assert_eq!(shown["envSecrets"], json!(["OPENAI_API_KEY"]));
+        assert!(!view(&cfg).to_string().contains("sk-live"), "no response may carry it");
+    }
+
+    /// The panel shows a mask, so it sends one back. That has to mean "leave it
+    /// alone" — anything else and every unrelated save wipes the key.
+    #[test]
+    fn a_masked_value_sent_back_keeps_the_stored_one() {
+        let held = vec!["OPENAI_API_KEY".to_string()];
+        let plan = plan_env(&json!({ "OPENAI_API_KEY": MASK, "OPENAI_MODEL": "gemma" }), &held, &BTreeMap::new());
+        assert!(plan.store.is_empty(), "nothing to re-encrypt");
+        assert!(plan.forget.is_empty(), "and nothing to lose");
+        assert_eq!(plan.keep, vec!["OPENAI_API_KEY"]);
+        assert_eq!(plan.secret_names(), vec!["OPENAI_API_KEY"]);
+    }
+
+    /// A mask against a name nothing is held for would record a credential that
+    /// does not exist, and every spawn on that engine would then refuse.
+    #[test]
+    fn a_mask_with_nothing_behind_it_records_nothing() {
+        let plan = plan_env(&json!({ "GH_TOKEN": MASK }), &[], &BTreeMap::new());
+        assert!(plan.secret_names().is_empty());
+        assert!(plan.plain.is_empty(), "and it is certainly not kept in the clear");
+    }
+
+    #[test]
+    fn clearing_or_deleting_a_line_forgets_the_credential() {
+        let held = vec!["A_TOKEN".to_string(), "B_TOKEN".to_string()];
+        // A emptied, B's line deleted outright.
+        let plan = plan_env(&json!({ "A_TOKEN": "  " }), &held, &BTreeMap::new());
+        assert_eq!(plan.forget, vec!["A_TOKEN", "B_TOKEN"]);
+        assert!(plan.secret_names().is_empty());
+    }
+
+    #[test]
+    fn replacing_a_stored_credential_re_encrypts_it_and_forgets_nothing() {
+        let plan = plan_env(&json!({ "GH_TOKEN": "ghp_new" }), &["GH_TOKEN".to_string()], &BTreeMap::new());
+        assert_eq!(plan.store["GH_TOKEN"], "ghp_new");
+        assert!(plan.forget.is_empty(), "it is being replaced, not dropped");
+    }
+
+    /// A catalogue default under a secret-shaped name is printed in this file,
+    /// so masking it costs a line of the panel and protects nothing. LM Studio
+    /// ships `OPENAI_API_KEY=lm-studio` precisely because it is not a secret.
+    #[test]
+    fn a_catalogue_placeholder_stays_visible() {
+        let shown = view(&json!({})).as_array().unwrap().iter()
+            .find(|e| e["id"] == "lmstudio").cloned().unwrap();
+        assert_eq!(shown["env"]["OPENAI_API_KEY"], "lm-studio");
+        assert_eq!(shown["envSecrets"], json!([]));
+        assert_eq!(shown["envPlaintext"], json!([]));
+    }
+
+    /// A key entered before there was anywhere better to put it. It still has
+    /// to WORK — so it stays in the environment the spawn uses — while the
+    /// panel says out loud that it is in the clear.
+    #[test]
+    fn a_credential_already_in_the_config_is_reported_rather_than_hidden() {
+        let cfg = json!({ "engines": { "lmstudio": { "env": { "OPENAI_API_KEY": "sk-old" } } } });
+        let shown = view(&cfg).as_array().unwrap().iter()
+            .find(|e| e["id"] == "lmstudio").cloned().unwrap();
+        assert_eq!(shown["envPlaintext"], json!(["OPENAI_API_KEY"]));
+        assert!(shown["env"].get("OPENAI_API_KEY").is_none(), "not shown either way");
+        assert!(!view(&cfg).to_string().contains("sk-old"));
+        // ...and an agent hired on it still gets the key.
+        assert_eq!(resolve(&cfg, "lmstudio").unwrap().env["OPENAI_API_KEY"], "sk-old");
+    }
+
+    /// The panel cannot show a plaintext key either, so it sends back a mask —
+    /// and a mask it does not recognise must not become a deletion. Saving the
+    /// engine moves the old value into the store instead, without anybody
+    /// having to go and find it.
+    #[test]
+    fn saving_an_engine_migrates_a_plaintext_credential_rather_than_dropping_it() {
+        let cfg = json!({ "engines": { "lmstudio": { "env": {
+            "OPENAI_BASE_URL": "http://192.168.99.8:1234/v1",
+            "OPENAI_API_KEY": "sk-old-and-exposed" } } } });
+        let held = resolve(&cfg, "lmstudio").unwrap().env_secrets;
+        assert!(held.is_empty(), "nothing is in the store yet");
+
+        let plan = plan_env(
+            &json!({ "OPENAI_BASE_URL": "http://192.168.99.8:1234/v1",
+                     "OPENAI_API_KEY": MASK }),
+            &held,
+            &plaintext_secrets(&cfg, "lmstudio"),
+        );
+        assert_eq!(plan.store["OPENAI_API_KEY"], "sk-old-and-exposed", "moved, not lost");
+        assert!(plan.forget.is_empty());
+        assert!(!plan.plain.contains_key("OPENAI_API_KEY"), "and gone from the config");
+        assert_eq!(plan.plain["OPENAI_BASE_URL"], "http://192.168.99.8:1234/v1");
+    }
+
+    /// Clearing the line is still a deletion, even for one that was never in
+    /// the store.
+    #[test]
+    fn clearing_a_plaintext_credential_drops_it_from_the_config() {
+        let cfg = json!({ "engines": { "x": { "command": "x", "env": { "GH_TOKEN": "ghp_old" } } } });
+        let plan = plan_env(&json!({ "GH_TOKEN": "" }), &[], &plaintext_secrets(&cfg, "x"));
+        assert!(plan.store.is_empty() && plan.plain.is_empty());
+        assert!(plan.secret_names().is_empty());
+    }
+
+    #[test]
+    fn a_spawn_refuses_when_the_store_cannot_produce_what_the_config_names() {
+        let _g = crate::secrets::env_guard();
+        std::env::set_var("MD_SECRET_KEY", "z".repeat(40));
+        let dir = std::env::temp_dir().join(format!("md-eng-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::secrets::Secrets::new(&dir);
+
+        let cfg = json!({ "engines": { "lmstudio": { "envSecrets": ["OPENAI_API_KEY"] } } });
+        let e = resolve(&cfg, "lmstudio").unwrap();
+        // Nothing stored yet: an error, not an empty value.
+        let err = secret_env(&e, &store).unwrap_err();
+        assert!(err.contains("OPENAI_API_KEY"), "{err}");
+
+        store.set(&secret_ref("lmstudio", "OPENAI_API_KEY"), "sk-real").unwrap();
+        assert_eq!(
+            secret_env(&e, &store).unwrap(),
+            vec![("OPENAI_API_KEY".to_string(), "sk-real".to_string())]
+        );
+        std::env::remove_var("MD_SECRET_KEY");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An engine holding no credentials must not need the store at all — most
+    /// of them never will, and a floor with no `MD_SECRET_KEY` still has to run.
+    #[test]
+    fn an_engine_with_no_credentials_asks_the_store_nothing() {
+        let _g = crate::secrets::env_guard();
+        std::env::remove_var("MD_SECRET_KEY");
+        let e = resolve(&json!({}), "claude").unwrap();
+        assert!(e.env_secrets.is_empty());
+        let store = crate::secrets::Secrets::new(std::path::Path::new("/nonexistent"));
+        assert_eq!(secret_env(&e, &store), Ok(vec![]));
+    }
 
     #[test]
     fn the_catalogue_stands_on_its_own() {

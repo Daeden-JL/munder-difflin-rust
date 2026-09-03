@@ -156,6 +156,11 @@ pub async fn build(cfg: &ServerConfig, accounts: Arc<accounts::Accounts>, sandbo
         .route("/api/me", get(me))
         .route("/api/mcp", get(mcp_catalog))
         .route("/api/engines", get(engine_catalog))
+        // Saving one engine, rather than the whole map through `config:update`.
+        // Two reasons: a credential typed here must go to the encrypted store
+        // and never into the config, and a client that had to send the entire
+        // `engines` map to change one field would race any other write to it.
+        .route("/api/engines/{id}", post(engine_save))
         .route("/api/engines/{id}/install", post(engine_install))
         .route("/api/engines/{id}/models", get(engine_models))
         // Web-native, like /api/transcript: the Electron bridge had no recast
@@ -477,7 +482,119 @@ async fn engine_catalog(
         .and_then(|p| std::fs::read_to_string(p.config_file()).ok())
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_else(|| serde_json::json!({}));
-    Json(serde_json::json!({ "engines": engines::view(&cfg) }))
+    Json(serde_json::json!({
+        "engines": engines::view(&cfg),
+        // Whether a credential typed into the panel has anywhere to go. Without
+        // it the save button would refuse every secret, and saying so up front
+        // is better than saying it on the fifth attempt.
+        "secretStore": secrets::available(),
+    }))
+}
+
+/// Save one engine's settings, sorting credentials out of the environment.
+///
+/// Admin, like installing: both of them are ways of handing a machine something
+/// it will act on. A secret-shaped value goes to the encrypted store and its
+/// NAME to the config, so the value cannot come back out through the catalogue —
+/// the panel can write a credential and can never read one.
+///
+/// With no `MD_SECRET_KEY` there is nowhere safe to put it, and the whole save
+/// is refused rather than quietly downgraded to plaintext, which is the rule the
+/// secret store already holds everywhere else.
+async fn engine_save(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    auth::Admin(session): auth::Admin,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let Some(paths) = state.paths(&session.tenant) else {
+        return Json(serde_json::json!({ "ok": false, "error": "no such floor" }));
+    };
+    let file = paths.config_file();
+    let mut config: serde_json::Value = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    // It has to already exist. Saving under a name nothing resolves would
+    // create an entry with no command — an engine that spawns nothing.
+    let Some(engine) = engines::resolve(&config, &id) else {
+        return Json(serde_json::json!({ "ok": false, "error": format!("no engine `{id}`") }));
+    };
+
+    // Absent `env` means "not editing the environment". It cannot mean "empty",
+    // because empty is also how every credential gets forgotten.
+    let touch_env = body.get("env").is_some_and(|v| v.is_object());
+    let plan = engines::plan_env(
+        &body["env"],
+        &engine.env_secrets,
+        // Anything secret-shaped this floor still holds in the clear. A save
+        // moves it into the store rather than asking the operator to go and
+        // find the value again.
+        &engines::plaintext_secrets(&config, &id),
+    );
+    let store = secrets::Secrets::new(&paths.harness_home());
+
+    if touch_env && !plan.store.is_empty() {
+        for (k, v) in &plan.store {
+            if let Err(e) = store.set(&engines::secret_ref(&id, k), v) {
+                // Nothing written yet on the config side, so the refusal leaves
+                // the floor exactly as it was.
+                return Json(serde_json::json!({ "ok": false, "error": e.to_string() }));
+            }
+        }
+    }
+    if touch_env {
+        for k in &plan.forget {
+            let _ = store.remove(&engines::secret_ref(&id, k));
+        }
+    }
+
+    if !config["engines"].is_object() {
+        config["engines"] = serde_json::json!({});
+    }
+    if !config["engines"][&id].is_object() {
+        config["engines"][&id] = serde_json::json!({});
+    }
+    let entry = &mut config["engines"][&id];
+    for field in ["command", "model"] {
+        if let Some(v) = body.get(field).and_then(|v| v.as_str()) {
+            entry[field] = serde_json::json!(v);
+        }
+    }
+    for field in ["args", "models"] {
+        if let Some(v) = body.get(field).filter(|v| v.is_array()) {
+            entry[field] = v.clone();
+        }
+    }
+    if touch_env {
+        entry["env"] = serde_json::json!(plan.plain);
+        let names = plan.secret_names();
+        if names.is_empty() {
+            entry.as_object_mut().map(|m| m.remove("envSecrets"));
+        } else {
+            entry["envSecrets"] = serde_json::json!(names);
+        }
+    }
+
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = std::fs::write(&file, serde_json::to_vec_pretty(&config).unwrap_or_default()) {
+        return Json(serde_json::json!({ "ok": false, "error": format!("could not save: {e}") }));
+    }
+    state.hub.publish(
+        &session.tenant,
+        md_contract::ServerEvent::new(
+            md_contract::Push::ConfigChanged,
+            serde_json::json!({ "engines": true, "engine": id }),
+        ),
+    );
+    Json(serde_json::json!({
+        "ok": true,
+        "stored": plan.secret_names(),
+        "forgot": plan.forget,
+    }))
 }
 
 /// The models an engine can run.
